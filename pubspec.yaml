@@ -1,0 +1,47 @@
+name: flutter_application_1
+description: "A new Flutter project."
+
+publish_to: 'none' # Remove this line if you wish to publish to pub.dev
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.11.1
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+  get: ^4.7.3
+  http: ^1.6.0
+  crypto: ^3.0.7
+  qr_flutter: ^4.1.0
+  simple_barcode_scanner: ^0.6.0
+  flip_card: ^0.7.0
+  barcode_widget: ^2.0.4
+  get_storage: ^2.1.1
+  excel: ^4.0.6
+  path_provider: ^2.1.5
+  share_plus: ^7.1.0
+  intl: ^0.20.2
+  flutter_localizations:
+    sdk: flutter
+
+  open_filex: ^4.3.2
+  local_auth: ^2.1.8
+  shared_preferences: ^2.2.2
+  archive: ^3.6.1
+  font_awesome_flutter: ^10.7.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+  flutter_lints: ^6.0.0
+
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/formato_aspersiones.xlsx
+    - lib/img/logo.jpg
+    - assets/ASEGURAMIENTO_DE_PLAGUICIDAS_A_LA_LLEGADA_AL_ALMACEN.xlsx
