@@ -53,6 +53,10 @@
 	<string>LaunchScreen</string>
 	<key>UIMainStoryboardFile</key>
 	<string>Main</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Necesitamos la cámara para escanear códigos QR.</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>Usamos Face ID para autenticación biométrica.</string>
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>

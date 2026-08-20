@@ -65,7 +65,15 @@ class MIPEExcelService {
             final Uint8List encodedBytes = raw is Uint8List ? raw : Uint8List.fromList(List<int>.from(raw as List));
             Directory? directory;
             try {
-              directory = await getExternalStorageDirectory();
+              if (Platform.isAndroid) {
+                try {
+                  directory = await getExternalStorageDirectory();
+                } catch (_) {
+                  directory = null;
+                }
+              } else {
+                directory = await getApplicationDocumentsDirectory();
+              }
             } catch (_) {
               directory = null;
             }

@@ -6,7 +6,6 @@ import 'dart:io';
 import 'package:local_auth/local_auth.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
-import 'package:local_auth_android/local_auth_android.dart';
 
 class LoginController extends GetxController {
   var isLoading = false.obs;
@@ -128,13 +127,6 @@ class LoginController extends GetxController {
 
       bool exito = await _auth.authenticate(
         localizedReason: 'Accede a La Planicie',
-        authMessages: const [
-          AndroidAuthMessages(
-            signInTitle: 'Acceso Seguro',
-            deviceCredentialsRequiredTitle: 'Ingrese su PIN',
-            cancelButton: 'Cancelar',
-          ),
-        ],
         options: const AuthenticationOptions(
           stickyAuth: true,
           biometricOnly: false,

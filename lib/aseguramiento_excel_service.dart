@@ -237,10 +237,20 @@ class AseguramientoExcelService {
   static Future<String> _saveFileNative(List<int> bytes, String fileName) async {
     Directory? directory;
     try {
-      directory = await getExternalStorageDirectory();
+      if (Platform.isAndroid) {
+        try {
+          directory = await getExternalStorageDirectory();
+        } catch (_) {
+          directory = null;
+        }
+      } else {
+        directory = await getApplicationDocumentsDirectory();
+      }
     } catch (_) {
       directory = null;
     }
+
+    // Fallback general
     if (directory == null) {
       directory = await getApplicationDocumentsDirectory();
     }
