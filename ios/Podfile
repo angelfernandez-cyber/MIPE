@@ -35,7 +35,13 @@ target 'Runner' do
 end
 
 post_install do |installer|
+  # 🔥 Configuración estándar de Flutter
+  flutter_additional_ios_build_settings(installer)
+
+  # 🔥 Forzar deployment target a 13.0 en TODOS los targets (incluyendo pods)
   installer.pods_project.targets.each do |target|
-    flutter_additional_ios_build_settings(target)
+    target.build_configurations.each do |config|
+      config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '13.0'
+    end
   end
 end

@@ -6,6 +6,7 @@ import 'dart:convert';
 import 'login_controller.dart';
 import 'formulario_almacen_page.dart';
 import 'aseguramiento_excel_service.dart';
+import 'dart:math';
 
 class HistorialAseguramientoPage extends StatefulWidget {
   const HistorialAseguramientoPage({super.key});
@@ -33,7 +34,7 @@ class _HistorialAseguramientoPageState
   final ScrollController _horizontalController = ScrollController();
   final ScrollController _headerHorizontalController = ScrollController();
 
-  // progreso exportación (estado de la página, usado para resumen pequeño si lo deseas)
+  // progreso exportación
   double _exportProgress = 0.0;
   bool _isExporting = false;
 
@@ -42,7 +43,6 @@ class _HistorialAseguramientoPageState
     super.initState();
     _fetchDatos();
 
-    // Sincronización de scroll: lo que muevas abajo se mueve arriba
     _horizontalController.addListener(() {
       if (_headerHorizontalController.hasClients) {
         _headerHorizontalController.jumpTo(_horizontalController.offset);
@@ -125,7 +125,7 @@ class _HistorialAseguramientoPageState
   }
 
   // -------------------------
-  // Exportación con modal (ValueNotifier para que la gráfica se actualice inmediatamente)
+  // Exportación con modal
   // -------------------------
   void _exportarExcelConModal() {
     if (_registrosFiltrados.isEmpty) {
@@ -137,16 +137,13 @@ class _HistorialAseguramientoPageState
         .map((e) => e is Map ? Map<String, dynamic>.from(e) : e)
         .toList();
 
-    // Reiniciar estado de la página
     setState(() {
       _isExporting = true;
       _exportProgress = 0.0;
     });
 
-    // Usamos ValueNotifier para que el diálogo escuche cambios y reconstruya solo su contenido
     final ValueNotifier<double> progressNotifier = ValueNotifier<double>(0.0);
 
-    // Mostrar diálogo inmediatamente (no dismissible)
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -158,55 +155,18 @@ class _HistorialAseguramientoPageState
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                // ValueListenableBuilder actualiza la UI del diálogo cuando cambia progressNotifier.value
-                ValueListenableBuilder<double>( 
+                ValueListenableBuilder<double>(
                   valueListenable: progressNotifier,
                   builder: (context, value, _) {
                     final percent = (value * 100).clamp(0.0, 100.0);
                     return Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        SizedBox(
-                          width: 110,
-                          height: 110,
-                          child: Stack(
-                            alignment: Alignment.center,
-                            children: [
-                              Container(
-                                width: 110,
-                                height: 110,
-                                decoration: BoxDecoration(
-                                  color: const Color(0xFFE9F3F8),
-                                  shape: BoxShape.circle,
-                                ),
-                              ),
-                              SizedBox(
-                                width: 110,
-                                height: 110,
-                                child: CustomPaint(
-                                  painter: _DonutPainter(progress: value, color: brandBlue),
-                                ),
-                              ),
-                              Column(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Text(
-                                    '${percent.toStringAsFixed(percent >= 10 ? 0 : 1)}%',
-                                    style: TextStyle(
-                                      color: brandBlue,
-                                      fontWeight: FontWeight.bold,
-                                      fontSize: 20,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 4),
-                                  Text(
-                                    value >= 1.0 ? 'Listo' : 'Exportando',
-                                    style: TextStyle(color: Colors.grey[700], fontSize: 12),
-                                  ),
-                                ],
-                              ),
-                            ],
-                          ),
+                        ExportProgressDonut(
+                          progress: value,
+                          size: 110,
+                          primaryColor: brandBlue,
+                          backgroundColor: const Color(0xFFE9F3F8),
                         ),
                         const SizedBox(height: 12),
                         LinearProgressIndicator(
@@ -227,7 +187,6 @@ class _HistorialAseguramientoPageState
             ),
           ),
           actions: [
-            // El botón cerrar solo aparece cuando la exportación terminó
             ValueListenableBuilder<double>(
               valueListenable: progressNotifier,
               builder: (context, value, _) {
@@ -247,9 +206,7 @@ class _HistorialAseguramientoPageState
       },
     );
 
-    // Ejecutar la exportación en la siguiente iteración para permitir que el diálogo se renderice
     Future.microtask(() async {
-      // pequeño retraso opcional para asegurar renderizado en dispositivos lentos
       await Future.delayed(const Duration(milliseconds: 50));
 
       try {
@@ -257,7 +214,6 @@ class _HistorialAseguramientoPageState
           registrosParaExportar,
           nombreArchivo: 'Aseguramiento',
           onProgress: (p) {
-            // Actualizamos tanto el estado de la página como el ValueNotifier del diálogo
             if (!mounted) return;
             final clamped = p.clamp(0.0, 1.0);
             setState(() {
@@ -275,20 +231,18 @@ class _HistorialAseguramientoPageState
           _exportProgress = 1.0;
         });
 
-        // Aseguramos que el diálogo tenga tiempo de mostrar 100% antes de cerrarlo
         await Future.delayed(const Duration(milliseconds: 200));
 
-        // Cerrar diálogo si sigue abierto (usar rootNavigator para asegurar que cerramos el dialog correcto)
         try {
           if (Navigator.of(context, rootNavigator: true).canPop()) {
             Navigator.of(context, rootNavigator: true).pop();
           }
         } catch (_) {}
 
-        // Liberar el notifier
         progressNotifier.dispose();
 
-        Get.snackbar('Exportado', 'Archivo generado: $outPath', snackPosition: SnackPosition.BOTTOM);
+        Get.snackbar('Exportado', 'Archivo generado: $outPath',
+            snackPosition: SnackPosition.BOTTOM);
       } catch (e) {
         if (mounted) {
           setState(() {
@@ -297,19 +251,18 @@ class _HistorialAseguramientoPageState
           });
         }
 
-        // Cerrar diálogo si sigue abierto
         try {
           if (Navigator.of(context, rootNavigator: true).canPop()) {
             Navigator.of(context, rootNavigator: true).pop();
           }
         } catch (_) {}
 
-        // Liberar el notifier
         try {
           progressNotifier.dispose();
         } catch (_) {}
 
-        Get.snackbar('Error', 'Fallo al exportar: ${e.toString()}', snackPosition: SnackPosition.BOTTOM);
+        Get.snackbar('Error', 'Fallo al exportar: ${e.toString()}',
+            snackPosition: SnackPosition.BOTTOM);
       }
     });
   }
@@ -343,7 +296,6 @@ class _HistorialAseguramientoPageState
 
         title: Row(
           children: [
-            // BOTÓN ATRÁS
             Container(
               decoration: BoxDecoration(
                 color: Colors.white.withOpacity(0.15),
@@ -358,10 +310,7 @@ class _HistorialAseguramientoPageState
                 onPressed: () => Get.back(),
               ),
             ),
-
             const SizedBox(width: 14),
-
-            // TÍTULO
             const Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -391,7 +340,6 @@ class _HistorialAseguramientoPageState
         ),
 
         actions: [
-          // BOTÓN NUEVO
           Container(
             margin: const EdgeInsets.only(right: 8),
             decoration: BoxDecoration(
@@ -409,8 +357,6 @@ class _HistorialAseguramientoPageState
               tooltip: "Nuevo Registro",
             ),
           ),
-
-          // BOTÓN EXCEL (ahora abre modal y muestra progreso)
           if (_registrosFiltrados.isNotEmpty)
             Container(
               margin: const EdgeInsets.only(right: 15),
@@ -442,7 +388,6 @@ class _HistorialAseguramientoPageState
                   padding: const EdgeInsets.fromLTRB(15, 12, 15, 0),
                   child: _buildFiltroYBanner(),
                 ),
-
                 Expanded(
                   child: _registrosFiltrados.isEmpty
                       ? _buildSinInformacion()
@@ -451,7 +396,6 @@ class _HistorialAseguramientoPageState
                             Expanded(
                               child: _buildTablaEstructuraFija(),
                             ),
-
                             if (_registrosFiltrados.length > _filasPorPagina)
                               _buildControlesPaginacion(),
                           ],
@@ -560,7 +504,6 @@ class _HistorialAseguramientoPageState
         borderRadius: BorderRadius.circular(25),
         child: Column(
           children: [
-            // 🔥 HEADER ULTRA PRO
             Container(
               padding: const EdgeInsets.symmetric(vertical: 5),
               decoration: const BoxDecoration(
@@ -590,8 +533,6 @@ class _HistorialAseguramientoPageState
                 ),
               ),
             ),
-
-            // 🔥 CUERPO PREMIUM
             Expanded(
               child: SingleChildScrollView(
                 controller: _horizontalController,
@@ -605,7 +546,6 @@ class _HistorialAseguramientoPageState
                       columnSpacing: 28,
                       dataRowHeight: 60,
                       dividerThickness: 0,
-
                       columns: _crearColumnas()
                           .map(
                             (c) => DataColumn(
@@ -615,7 +555,6 @@ class _HistorialAseguramientoPageState
                             ),
                           )
                           .toList(),
-
                       rows: List.generate(datosPaginados.length, (index) {
                         final item = datosPaginados[index];
 
@@ -658,7 +597,6 @@ class _HistorialAseguramientoPageState
       color: Colors.white,
       fontSize: 13,
     );
-    // Definimos anchos fijos para que coincidan perfectamente header y body
     return [
       DataColumn(
         label: SizedBox(width: 45, child: Text('Sem.', style: st)),
@@ -724,7 +662,7 @@ class _HistorialAseguramientoPageState
   }
 
   List<DataCell> _crearCeldas(dynamic item) {
-    TextStyle cellStyle = const TextStyle(fontSize: 12, color: Colors.black87, letterSpacing: 0.3,);
+    TextStyle cellStyle = const TextStyle(fontSize: 12, color: Colors.black87, letterSpacing: 0.3);
     return [
       DataCell(
         SizedBox(
@@ -945,7 +883,74 @@ class _HistorialAseguramientoPageState
   }
 }
 
-/// Donut painter reutilizable (sin dependencias externas)
+// ---------- Widgets de progreso (añadidos) ----------
+
+class ExportProgressDonut extends StatelessWidget {
+  final double progress; // 0.0 .. 1.0
+  final double size;
+  final Color primaryColor;
+  final Color backgroundColor;
+
+  const ExportProgressDonut({
+    Key? key,
+    required this.progress,
+    this.size = 120,
+    this.primaryColor = const Color(0xFF008DC5),
+    this.backgroundColor = const Color(0xFFE9F3F8),
+  }) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    final double p = progress.clamp(0.0, 1.0);
+    final percent = (p * 100);
+    return SizedBox(
+      width: size,
+      height: size,
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          Container(
+            width: size,
+            height: size,
+            decoration: BoxDecoration(
+              color: backgroundColor,
+              shape: BoxShape.circle,
+            ),
+          ),
+          SizedBox(
+            width: size,
+            height: size,
+            child: CustomPaint(
+              painter: _DonutPainter(progress: p, color: primaryColor),
+            ),
+          ),
+          Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                '${percent.toStringAsFixed(percent >= 10 ? 0 : 1)}%',
+                style: TextStyle(
+                  color: primaryColor,
+                  fontWeight: FontWeight.bold,
+                  fontSize: size * 0.20,
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                p >= 1.0 ? 'Listo' : (p > 0 ? 'Exportando' : 'Sin exportar'),
+                style: TextStyle(
+                  color: Colors.grey[700],
+                  fontSize: size * 0.10,
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _DonutPainter extends CustomPainter {
   final double progress;
   final Color color;
@@ -956,8 +961,13 @@ class _DonutPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     final stroke = size.width * 0.12;
     final rect = Offset.zero & size;
+
     final center = rect.center;
     final radius = (size.width - stroke) / 2;
+    final bgPaint = Paint()
+      ..color = Colors.transparent
+      ..style = PaintingStyle.fill;
+    canvas.drawCircle(center, radius, bgPaint);
 
     final basePaint = Paint()
       ..color = color.withOpacity(0.12)
@@ -973,9 +983,10 @@ class _DonutPainter extends CustomPainter {
 
     canvas.drawCircle(center, radius, basePaint);
 
-    final startAngle = -3.1415926535897932 / 2;
-    final sweepAngle = 2 * 3.1415926535897932 * progress.clamp(0.0, 1.0);
-    canvas.drawArc(Rect.fromCircle(center: center, radius: radius), startAngle, sweepAngle, false, progressPaint);
+    final startAngle = -pi / 2;
+    final sweepAngle = 2 * pi * progress;
+    canvas.drawArc(Rect.fromCircle(center: center, radius: radius), startAngle,
+        sweepAngle, false, progressPaint);
   }
 
   @override
