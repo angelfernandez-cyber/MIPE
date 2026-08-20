@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'dart:ui';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'login_controller.dart';
 
 class LoginPage extends StatefulWidget {
@@ -20,6 +21,32 @@ class _LoginPageState extends State<LoginPage> {
     LoginController(),
     permanent: true,
   );
+
+  @override
+  void initState() {
+    super.initState();
+    // Esperamos un poco para que el controlador cargue SharedPreferences
+    Future.delayed(const Duration(milliseconds: 150), () {
+      // Si el controlador ya cargó el usuario recordado, precargamos el campo
+      if (loginController.usuarioRecordado.value.isNotEmpty) {
+        _identificacionController.text = loginController.usuarioRecordado.value;
+      }
+      // Precargar la contraseña solo si el switch "Recordar" está activo
+      // y existe una contraseña guardada en el controlador.
+      try {
+        if (loginController.recordarUsuario.value &&
+            (loginController.passwordRecordado.value?.isNotEmpty ?? false)) {
+          _passwordController.text = loginController.passwordRecordado.value;
+        } else {
+          _passwordController.text = '';
+        }
+      } catch (_) {
+        // Si el controlador no tiene passwordRecordado o hay algún error,
+        // no precargamos la contraseña para evitar fallos.
+        _passwordController.text = '';
+      }
+    });
+  }
 
   @override
   void dispose() {
@@ -79,8 +106,8 @@ class _LoginPageState extends State<LoginPage> {
                             child: Image.asset(
                               'lib/img/logo.jpg',
                               fit: BoxFit.contain,
-                              errorBuilder: (context, error, stackTrace) =>
-                                  const Icon(
+                              errorBuilder:
+                                  (context, error, stackTrace) => const Icon(
                                     Icons.eco,
                                     size: 80,
                                     color: primaryColor,
@@ -159,6 +186,38 @@ class _LoginPageState extends State<LoginPage> {
                                 color: primaryColor,
                                 isPassword: true,
                               ),
+
+                              const SizedBox(height: 12),
+
+                              // --- SWITCH RECORDAR USUARIO ---
+                              Obx(
+                                () => Row(
+                                  mainAxisAlignment: MainAxisAlignment.start,
+                                  children: [
+                                    Switch(
+                                      value:
+                                          loginController.recordarUsuario.value,
+                                      onChanged: (val) {
+                                        loginController.recordarUsuario.value =
+                                            val;
+                                        if (!val) {
+                                          loginController
+                                              .borrarUsuarioRecordado();
+                                        }
+                                      },
+                                      activeColor: primaryColor,
+                                    ),
+                                    const SizedBox(width: 8),
+                                    const Text(
+                                      'Recordar usuario',
+                                      style: TextStyle(
+                                        fontSize: 14,
+                                        color: Colors.black87,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
                             ],
                           ),
                         ),
@@ -169,112 +228,122 @@ class _LoginPageState extends State<LoginPage> {
 
                     // --- BOTÓN PRINCIPAL Y BIOMETRÍA ---
                     Obx(
-                      () => loginController.isLoading.value
-                          ? const CircularProgressIndicator(color: primaryColor)
-                          : Column(
-                              children: [
-                                Container(
-                                  width: double.infinity,
-                                  height: 60,
-                                  decoration: BoxDecoration(
-                                    borderRadius: BorderRadius.circular(20),
-                                    gradient: const LinearGradient(
-                                      colors: [primaryColor, Color(0xFF00B4DB)],
-                                    ),
-                                    boxShadow: [
-                                      BoxShadow(
-                                        color: primaryColor.withOpacity(0.4),
-                                        blurRadius: 15,
-                                        offset: const Offset(0, 8),
+                      () =>
+                          loginController.isLoading.value
+                              ? const CircularProgressIndicator(
+                                color: primaryColor,
+                              )
+                              : Column(
+                                children: [
+                                  Container(
+                                    width: double.infinity,
+                                    height: 60,
+                                    decoration: BoxDecoration(
+                                      borderRadius: BorderRadius.circular(20),
+                                      gradient: const LinearGradient(
+                                        colors: [
+                                          primaryColor,
+                                          Color(0xFF00B4DB),
+                                        ],
                                       ),
-                                    ],
+                                      boxShadow: [
+                                        BoxShadow(
+                                          color: primaryColor.withOpacity(0.4),
+                                          blurRadius: 15,
+                                          offset: const Offset(0, 8),
+                                        ),
+                                      ],
+                                    ),
+                                    child: ElevatedButton(
+                                      style: ElevatedButton.styleFrom(
+                                        backgroundColor: Colors.transparent,
+                                        shadowColor: Colors.transparent,
+                                        shape: RoundedRectangleBorder(
+                                          borderRadius: BorderRadius.circular(
+                                            20,
+                                          ),
+                                        ),
+                                      ),
+                                      onPressed: () async {
+                                        // Llamamos al login normal; el controlador se encargará
+                                        // de guardar user_data y recordar usuario según el flag
+                                        await loginController.login(
+                                          _identificacionController.text.trim(),
+                                          _passwordController.text,
+                                        );
+                                      },
+                                      child: const Text(
+                                        'INICIAR SESIÓN',
+                                        style: TextStyle(
+                                          fontSize: 16,
+                                          fontWeight: FontWeight.bold,
+                                          color: Colors.white,
+                                          letterSpacing: 1.5,
+                                        ),
+                                      ),
+                                    ),
                                   ),
-                                  child: ElevatedButton(
-                                    style: ElevatedButton.styleFrom(
-                                      backgroundColor: Colors.transparent,
-                                      shadowColor: Colors.transparent,
-                                      shape: RoundedRectangleBorder(
-                                        borderRadius: BorderRadius.circular(20),
-                                      ),
-                                    ),
-                                    onPressed: () {
-                                      loginController.login(
-                                        _identificacionController.text,
-                                        _passwordController.text,
-                                      );
-                                    },
-                                    child: const Text(
-                                      'INICIAR SESIÓN',
-                                      style: TextStyle(
-                                        fontSize: 16,
-                                        fontWeight: FontWeight.bold,
-                                        color: Colors.white,
-                                        letterSpacing: 1.5,
-                                      ),
-                                    ),
-                                  ),
-                                ),
 
-                                // --- ACCESO RÁPIDO BIOMÉTRICO ---
-                                const SizedBox(height: 20),
-                                IconButton(
-                                  icon: const Icon(
-                                    Icons.fingerprint_rounded,
-                                    size: 50,
+                                  // --- ACCESO RÁPIDO BIOMÉTRICO ---
+                                  const SizedBox(height: 20),
+                                  IconButton(
+                                    icon: const Icon(
+                                      Icons.fingerprint_rounded,
+                                      size: 50,
+                                    ),
+                                    color: accentColor,
+                                    tooltip: 'Ingresar con huella',
+                                    onPressed: () async {
+                                      final prefs =
+                                      await SharedPreferences.getInstance();
+                                      final bool biometriaHabilitada =
+                                          prefs.getBool(
+                                            'biometria_habilitada',
+                                          ) ??
+                                          false;
+                                      if (biometriaHabilitada) {
+                                        // Intentamos verificar sesión existente (controlador maneja la biometría)
+                                        loginController
+                                            .verificarSesionExistente();
+                                      } else {
+                                        Get.snackbar(
+                                          'Biometría',
+                                          'Primero inicia sesión con usuario y contraseña para habilitar biometría',
+                                          snackPosition: SnackPosition.BOTTOM,
+                                        );
+                                      }
+                                    },
                                   ),
-                                  color: accentColor,
-                                  tooltip: 'Ingresar con huella',
-                                  onPressed: () => loginController
-                                      .verificarSesionExistente(),
-                                ),
-                                const Text(
-                                  "Toque para usar biometría",
-                                  style: TextStyle(
-                                    color: Colors.grey,
-                                    fontSize: 11,
+                                  const Text(
+                                    "Toque para usar biometría",
+                                    style: TextStyle(
+                                      color: Colors.grey,
+                                      fontSize: 11,
+                                    ),
                                   ),
-                                ),
-                              ],
-                            ),
+                                ],
+                              ),
                     ),
 
                     const SizedBox(height: 20),
 
                     // MENSAJE DE ERROR
                     Obx(
-                      () => loginController.message.value.isNotEmpty
-                          ? Padding(
-                              padding: const EdgeInsets.only(bottom: 10),
-                              child: Text(
-                                loginController.message.value,
-                                style: const TextStyle(
-                                  color: Colors.redAccent,
-                                  fontWeight: FontWeight.w600,
+                      () =>
+                          loginController.message.value.isNotEmpty
+                              ? Padding(
+                                padding: const EdgeInsets.only(bottom: 10),
+                                child: Text(
+                                  loginController.message.value,
+                                  style: const TextStyle(
+                                    color: Colors.redAccent,
+                                    fontWeight: FontWeight.w600,
+                                  ),
                                 ),
-                              ),
-                            )
-                          : const SizedBox.shrink(),
+                              )
+                              : const SizedBox.shrink(),
                     ),
-
                     // BOTÓN REGISTRO
-                    TextButton(
-                      onPressed: () => Get.toNamed('/register'),
-                      child: RichText(
-                        text: const TextSpan(
-                          text: "¿No tienes cuenta? ",
-                          style: TextStyle(color: Colors.blueGrey),
-                          children: [
-                            TextSpan(
-                              text: "Regístrate",
-                              style: TextStyle(
-                                color: primaryColor,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
                   ],
                 ),
               ),

@@ -194,7 +194,7 @@ class _HomePageState extends State<HomePage> {
                     if (lectura.contains("scanner"))
                       _buildActionCard(
                         title: "ESCÁNER QR",
-                        subtitle: "Registro rápido por bloque",
+                        subtitle: "búsqueda rápida por bloque",
                         icon: Icons.qr_code_scanner_rounded,
                         gradient: [brandBlue, darkBlue],
                         onTap: _scanBarcode,

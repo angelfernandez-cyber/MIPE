@@ -1,3 +1,4 @@
+// lib/historial_aseguramiento_page.dart
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:http/http.dart' as http;
@@ -31,6 +32,10 @@ class _HistorialAseguramientoPageState
   // Controladores para sincronizar el scroll horizontal
   final ScrollController _horizontalController = ScrollController();
   final ScrollController _headerHorizontalController = ScrollController();
+
+  // progreso exportación (estado de la página, usado para resumen pequeño si lo deseas)
+  double _exportProgress = 0.0;
+  bool _isExporting = false;
 
   @override
   void initState() {
@@ -119,157 +124,343 @@ class _HistorialAseguramientoPageState
     return _registrosFiltrados.sublist(inicio, fin);
   }
 
-  @override
-Widget build(BuildContext context) {
-  return Scaffold(
-    backgroundColor: const Color(0xFFF0F4F8),
+  // -------------------------
+  // Exportación con modal (ValueNotifier para que la gráfica se actualice inmediatamente)
+  // -------------------------
+  void _exportarExcelConModal() {
+    if (_registrosFiltrados.isEmpty) {
+      Get.snackbar('Error', 'No hay datos para exportar');
+      return;
+    }
 
-    appBar: AppBar(
-      toolbarHeight: 75,
-      elevation: 0,
-      backgroundColor: Colors.transparent,
-      automaticallyImplyLeading: false,
+    final registrosParaExportar = _registrosFiltrados
+        .map((e) => e is Map ? Map<String, dynamic>.from(e) : e)
+        .toList();
 
-      flexibleSpace: Container(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            colors: [
-              Color(0xFF008DC5),
-              Color(0xFF005F86),
-            ],
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-          ),
-          borderRadius: BorderRadius.vertical(
-            bottom: Radius.circular(28),
-          ),
-        ),
-      ),
+    // Reiniciar estado de la página
+    setState(() {
+      _isExporting = true;
+      _exportProgress = 0.0;
+    });
 
-      title: Row(
-        children: [
-          // BOTÓN ATRÁS
-          Container(
-            decoration: BoxDecoration(
-              color: Colors.white.withOpacity(0.15),
-              borderRadius: BorderRadius.circular(14),
-            ),
-            child: IconButton(
-              icon: const Icon(
-                Icons.arrow_back_ios_new_rounded,
-                color: Colors.white,
-                size: 18,
-              ),
-              onPressed: () => Get.back(),
-            ),
-          ),
+    // Usamos ValueNotifier para que el diálogo escuche cambios y reconstruya solo su contenido
+    final ValueNotifier<double> progressNotifier = ValueNotifier<double>(0.0);
 
-          const SizedBox(width: 14),
-
-          // TÍTULO
-          const Expanded(
+    // Mostrar diálogo inmediatamente (no dismissible)
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Exportando Excel'),
+          content: SizedBox(
+            width: double.maxFinite,
             child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisAlignment: MainAxisAlignment.center,
+              mainAxisSize: MainAxisSize.min,
               children: [
-                Text(
-                  "Historial",
-                  style: TextStyle(
-                    color: Colors.white70,
-                    fontSize: 11,
-                    letterSpacing: 1,
-                  ),
-                ),
-                Text(
-                  "ALMACÉN",
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 20,
-                    fontWeight: FontWeight.w900,
-                    letterSpacing: 1.2,
-                  ),
+                // ValueListenableBuilder actualiza la UI del diálogo cuando cambia progressNotifier.value
+                ValueListenableBuilder<double>( 
+                  valueListenable: progressNotifier,
+                  builder: (context, value, _) {
+                    final percent = (value * 100).clamp(0.0, 100.0);
+                    return Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        SizedBox(
+                          width: 110,
+                          height: 110,
+                          child: Stack(
+                            alignment: Alignment.center,
+                            children: [
+                              Container(
+                                width: 110,
+                                height: 110,
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFFE9F3F8),
+                                  shape: BoxShape.circle,
+                                ),
+                              ),
+                              SizedBox(
+                                width: 110,
+                                height: 110,
+                                child: CustomPaint(
+                                  painter: _DonutPainter(progress: value, color: brandBlue),
+                                ),
+                              ),
+                              Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text(
+                                    '${percent.toStringAsFixed(percent >= 10 ? 0 : 1)}%',
+                                    style: TextStyle(
+                                      color: brandBlue,
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 20,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    value >= 1.0 ? 'Listo' : 'Exportando',
+                                    style: TextStyle(color: Colors.grey[700], fontSize: 12),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        LinearProgressIndicator(
+                          value: value.clamp(0.0, 1.0),
+                          color: brandBlue,
+                          backgroundColor: Colors.grey[200],
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          '${percent.toStringAsFixed(percent >= 10 ? 0 : 1)}%',
+                          style: TextStyle(color: Colors.grey[700]),
+                        ),
+                      ],
+                    );
+                  },
                 ),
               ],
             ),
           ),
-        ],
-      ),
-
-      actions: [
-        // BOTÓN NUEVO
-        Container(
-          margin: const EdgeInsets.only(right: 8),
-          decoration: BoxDecoration(
-            color: Colors.white.withOpacity(0.15),
-            borderRadius: BorderRadius.circular(14),
-          ),
-          child: IconButton(
-            icon: const Icon(
-              Icons.add_rounded,
-              color: Colors.white,
+          actions: [
+            // El botón cerrar solo aparece cuando la exportación terminó
+            ValueListenableBuilder<double>(
+              valueListenable: progressNotifier,
+              builder: (context, value, _) {
+                if (value >= 1.0) {
+                  return TextButton(
+                    onPressed: () {
+                      Navigator.of(context, rootNavigator: true).pop();
+                    },
+                    child: const Text('Cerrar'),
+                  );
+                }
+                return const SizedBox.shrink();
+              },
             ),
-            onPressed: () => Get.to(
-              () => const AseguramientoPage(),
-            )?.then((value) => _fetchDatos()),
-            tooltip: "Nuevo Registro",
+          ],
+        );
+      },
+    );
+
+    // Ejecutar la exportación en la siguiente iteración para permitir que el diálogo se renderice
+    Future.microtask(() async {
+      // pequeño retraso opcional para asegurar renderizado en dispositivos lentos
+      await Future.delayed(const Duration(milliseconds: 50));
+
+      try {
+        final outPath = await AseguramientoExcelService.generarReporte(
+          registrosParaExportar,
+          nombreArchivo: 'Aseguramiento',
+          onProgress: (p) {
+            // Actualizamos tanto el estado de la página como el ValueNotifier del diálogo
+            if (!mounted) return;
+            final clamped = p.clamp(0.0, 1.0);
+            setState(() {
+              _exportProgress = clamped;
+            });
+            try {
+              progressNotifier.value = clamped;
+            } catch (_) {}
+          },
+        );
+
+        if (!mounted) return;
+        setState(() {
+          _isExporting = false;
+          _exportProgress = 1.0;
+        });
+
+        // Aseguramos que el diálogo tenga tiempo de mostrar 100% antes de cerrarlo
+        await Future.delayed(const Duration(milliseconds: 200));
+
+        // Cerrar diálogo si sigue abierto (usar rootNavigator para asegurar que cerramos el dialog correcto)
+        try {
+          if (Navigator.of(context, rootNavigator: true).canPop()) {
+            Navigator.of(context, rootNavigator: true).pop();
+          }
+        } catch (_) {}
+
+        // Liberar el notifier
+        progressNotifier.dispose();
+
+        Get.snackbar('Exportado', 'Archivo generado: $outPath', snackPosition: SnackPosition.BOTTOM);
+      } catch (e) {
+        if (mounted) {
+          setState(() {
+            _isExporting = false;
+            _exportProgress = 0.0;
+          });
+        }
+
+        // Cerrar diálogo si sigue abierto
+        try {
+          if (Navigator.of(context, rootNavigator: true).canPop()) {
+            Navigator.of(context, rootNavigator: true).pop();
+          }
+        } catch (_) {}
+
+        // Liberar el notifier
+        try {
+          progressNotifier.dispose();
+        } catch (_) {}
+
+        Get.snackbar('Error', 'Fallo al exportar: ${e.toString()}', snackPosition: SnackPosition.BOTTOM);
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFFF0F4F8),
+
+      appBar: AppBar(
+        toolbarHeight: 75,
+        elevation: 0,
+        backgroundColor: Colors.transparent,
+        automaticallyImplyLeading: false,
+
+        flexibleSpace: Container(
+          decoration: const BoxDecoration(
+            gradient: LinearGradient(
+              colors: [
+                Color(0xFF008DC5),
+                Color(0xFF005F86),
+              ],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
+            borderRadius: BorderRadius.vertical(
+              bottom: Radius.circular(28),
+            ),
           ),
         ),
 
-        // BOTÓN EXCEL
-        if (_registrosFiltrados.isNotEmpty)
+        title: Row(
+          children: [
+            // BOTÓN ATRÁS
+            Container(
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.15),
+                borderRadius: BorderRadius.circular(14),
+              ),
+              child: IconButton(
+                icon: const Icon(
+                  Icons.arrow_back_ios_new_rounded,
+                  color: Colors.white,
+                  size: 18,
+                ),
+                onPressed: () => Get.back(),
+              ),
+            ),
+
+            const SizedBox(width: 14),
+
+            // TÍTULO
+            const Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Text(
+                    "Historial",
+                    style: TextStyle(
+                      color: Colors.white70,
+                      fontSize: 11,
+                      letterSpacing: 1,
+                    ),
+                  ),
+                  Text(
+                    "ALMACÉN",
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 20,
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: 1.2,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+
+        actions: [
+          // BOTÓN NUEVO
           Container(
-            margin: const EdgeInsets.only(right: 15),
+            margin: const EdgeInsets.only(right: 8),
             decoration: BoxDecoration(
               color: Colors.white.withOpacity(0.15),
               borderRadius: BorderRadius.circular(14),
             ),
             child: IconButton(
               icon: const Icon(
-                Icons.file_download_rounded,
+                Icons.add_rounded,
                 color: Colors.white,
               ),
-              onPressed: () => AseguramientoExcelService.generarReporte(
-                _registrosFiltrados
-                    .map((e) => Map<String, dynamic>.from(e))
-                    .toList(),
-              ),
-              tooltip: "Exportar Excel",
+              onPressed: () => Get.to(
+                () => const AseguramientoPage(),
+              )?.then((value) => _fetchDatos()),
+              tooltip: "Nuevo Registro",
             ),
           ),
-      ],
-    ),
 
-    body: _isLoading
-        ? const Center(
-            child: CircularProgressIndicator(
-              color: brandBlue,
+          // BOTÓN EXCEL (ahora abre modal y muestra progreso)
+          if (_registrosFiltrados.isNotEmpty)
+            Container(
+              margin: const EdgeInsets.only(right: 15),
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.15),
+                borderRadius: BorderRadius.circular(14),
+              ),
+              child: IconButton(
+                icon: const Icon(
+                  Icons.file_download_rounded,
+                  color: Colors.white,
+                ),
+                onPressed: _exportarExcelConModal,
+                tooltip: "Exportar Excel",
+              ),
             ),
-          )
-        : Column(
-            children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(15, 12, 15, 0),
-                child: _buildFiltroYBanner(),
-              ),
+        ],
+      ),
 
-              Expanded(
-                child: _registrosFiltrados.isEmpty
-                    ? _buildSinInformacion()
-                    : Column(
-                        children: [
-                          Expanded(
-                            child: _buildTablaEstructuraFija(),
-                          ),
-
-                          if (_registrosFiltrados.length > _filasPorPagina)
-                            _buildControlesPaginacion(),
-                        ],
-                      ),
+      body: _isLoading
+          ? const Center(
+              child: CircularProgressIndicator(
+                color: brandBlue,
               ),
-            ],
-          ),
-  );
-}
+            )
+          : Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(15, 12, 15, 0),
+                  child: _buildFiltroYBanner(),
+                ),
+
+                Expanded(
+                  child: _registrosFiltrados.isEmpty
+                      ? _buildSinInformacion()
+                      : Column(
+                          children: [
+                            Expanded(
+                              child: _buildTablaEstructuraFija(),
+                            ),
+
+                            if (_registrosFiltrados.length > _filasPorPagina)
+                              _buildControlesPaginacion(),
+                          ],
+                        ),
+                ),
+              ],
+            ),
+    );
+  }
 
   Widget _buildFiltroYBanner() {
     return Container(
@@ -346,120 +537,120 @@ Widget build(BuildContext context) {
   }
 
   Widget _buildTablaEstructuraFija() {
-  final datosPaginados = _obtenerDatosPaginados();
+    final datosPaginados = _obtenerDatosPaginados();
 
-  return Container(
-    margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-    decoration: BoxDecoration(
-      gradient: const LinearGradient(
-        colors: [Color(0xFFF8FBFF), Colors.white],
-        begin: Alignment.topCenter,
-        end: Alignment.bottomCenter,
-      ),
-      borderRadius: BorderRadius.circular(25),
-      boxShadow: [
-        BoxShadow(
-          color: brandBlue.withOpacity(0.15),
-          blurRadius: 25,
-          offset: const Offset(0, 10),
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          colors: [Color(0xFFF8FBFF), Colors.white],
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
         ),
-      ],
-    ),
-    child: ClipRRect(
-      borderRadius: BorderRadius.circular(25),
-      child: Column(
-        children: [
-          // 🔥 HEADER ULTRA PRO
-          Container(
-            padding: const EdgeInsets.symmetric(vertical: 5),
-            decoration: const BoxDecoration(
-              gradient: LinearGradient(
-                colors: [Color(0xFF008DC5), Color(0xFF005F86)],
-              ),
-            ),
-            child: SingleChildScrollView(
-              controller: _headerHorizontalController,
-              scrollDirection: Axis.horizontal,
-              physics: const NeverScrollableScrollPhysics(),
-              child: IntrinsicWidth(
-                child: DataTable(
-                  showCheckboxColumn: false,
-                  headingRowHeight: 60,
-                  horizontalMargin: 18,
-                  columnSpacing: 28,
-                  headingTextStyle: const TextStyle(
-                    fontWeight: FontWeight.w900,
-                    color: Colors.white,
-                    fontSize: 13,
-                    letterSpacing: 0.5,
-                  ),
-                  columns: _crearColumnas(),
-                  rows: const [],
-                ),
-              ),
-            ),
-          ),
-
-          // 🔥 CUERPO PREMIUM
-          Expanded(
-            child: SingleChildScrollView(
-              controller: _horizontalController,
-              scrollDirection: Axis.horizontal,
-              child: SingleChildScrollView(
-                child: IntrinsicWidth(
-                  child: DataTable(
-                    showCheckboxColumn: false,
-                    headingRowHeight: 0,
-                    horizontalMargin: 18,
-                    columnSpacing: 28,
-                    dataRowHeight: 60,
-                    dividerThickness: 0,
-
-                    columns: _crearColumnas()
-                        .map(
-                          (c) => DataColumn(
-                            label: SizedBox(
-                              width: (c.label as SizedBox).width,
-                            ),
-                          ),
-                        )
-                        .toList(),
-
-                    rows: List.generate(datosPaginados.length, (index) {
-                      final item = datosPaginados[index];
-
-                      return DataRow(
-                        color: MaterialStateProperty.resolveWith<Color?>(
-                          (states) {
-                            if (states.contains(MaterialState.hovered)) {
-                              return brandBlue.withOpacity(0.12);
-                            }
-                            return index.isEven
-                                ? Colors.white
-                                : const Color(0xFFF7FAFC);
-                          },
-                        ),
-                        onSelectChanged: (_) {
-                          Get.to(
-                            () => AseguramientoPage(
-                              dataInicial: item,
-                              esLectura: true,
-                            ),
-                          );
-                        },
-                        cells: _crearCeldas(item),
-                      );
-                    }),
-                  ),
-                ),
-              ),
-            ),
+        borderRadius: BorderRadius.circular(25),
+        boxShadow: [
+          BoxShadow(
+            color: brandBlue.withOpacity(0.15),
+            blurRadius: 25,
+            offset: const Offset(0, 10),
           ),
         ],
       ),
-    ),
-  );
-}
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(25),
+        child: Column(
+          children: [
+            // 🔥 HEADER ULTRA PRO
+            Container(
+              padding: const EdgeInsets.symmetric(vertical: 5),
+              decoration: const BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [Color(0xFF008DC5), Color(0xFF005F86)],
+                ),
+              ),
+              child: SingleChildScrollView(
+                controller: _headerHorizontalController,
+                scrollDirection: Axis.horizontal,
+                physics: const NeverScrollableScrollPhysics(),
+                child: IntrinsicWidth(
+                  child: DataTable(
+                    showCheckboxColumn: false,
+                    headingRowHeight: 60,
+                    horizontalMargin: 18,
+                    columnSpacing: 28,
+                    headingTextStyle: const TextStyle(
+                      fontWeight: FontWeight.w900,
+                      color: Colors.white,
+                      fontSize: 13,
+                      letterSpacing: 0.5,
+                    ),
+                    columns: _crearColumnas(),
+                    rows: const [],
+                  ),
+                ),
+              ),
+            ),
+
+            // 🔥 CUERPO PREMIUM
+            Expanded(
+              child: SingleChildScrollView(
+                controller: _horizontalController,
+                scrollDirection: Axis.horizontal,
+                child: SingleChildScrollView(
+                  child: IntrinsicWidth(
+                    child: DataTable(
+                      showCheckboxColumn: false,
+                      headingRowHeight: 0,
+                      horizontalMargin: 18,
+                      columnSpacing: 28,
+                      dataRowHeight: 60,
+                      dividerThickness: 0,
+
+                      columns: _crearColumnas()
+                          .map(
+                            (c) => DataColumn(
+                              label: SizedBox(
+                                width: (c.label as SizedBox).width,
+                              ),
+                            ),
+                          )
+                          .toList(),
+
+                      rows: List.generate(datosPaginados.length, (index) {
+                        final item = datosPaginados[index];
+
+                        return DataRow(
+                          color: MaterialStateProperty.resolveWith<Color?>(
+                            (states) {
+                              if (states.contains(MaterialState.hovered)) {
+                                return brandBlue.withOpacity(0.12);
+                              }
+                              return index.isEven
+                                  ? Colors.white
+                                  : const Color(0xFFF7FAFC);
+                            },
+                          ),
+                          onSelectChanged: (_) {
+                            Get.to(
+                              () => AseguramientoPage(
+                                dataInicial: item,
+                                esLectura: true,
+                              ),
+                            );
+                          },
+                          cells: _crearCeldas(item),
+                        );
+                      }),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 
   List<DataColumn> _crearColumnas() {
     TextStyle st = const TextStyle(
@@ -751,5 +942,44 @@ Widget build(BuildContext context) {
         ],
       ),
     );
+  }
+}
+
+/// Donut painter reutilizable (sin dependencias externas)
+class _DonutPainter extends CustomPainter {
+  final double progress;
+  final Color color;
+
+  _DonutPainter({required this.progress, required this.color});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final stroke = size.width * 0.12;
+    final rect = Offset.zero & size;
+    final center = rect.center;
+    final radius = (size.width - stroke) / 2;
+
+    final basePaint = Paint()
+      ..color = color.withOpacity(0.12)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = stroke
+      ..strokeCap = StrokeCap.round;
+
+    final progressPaint = Paint()
+      ..color = color
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = stroke
+      ..strokeCap = StrokeCap.round;
+
+    canvas.drawCircle(center, radius, basePaint);
+
+    final startAngle = -3.1415926535897932 / 2;
+    final sweepAngle = 2 * 3.1415926535897932 * progress.clamp(0.0, 1.0);
+    canvas.drawArc(Rect.fromCircle(center: center, radius: radius), startAngle, sweepAngle, false, progressPaint);
+  }
+
+  @override
+  bool shouldRepaint(covariant _DonutPainter oldDelegate) {
+    return oldDelegate.progress != progress || oldDelegate.color != color;
   }
 }
