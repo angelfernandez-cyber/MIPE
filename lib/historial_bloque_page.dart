@@ -8,6 +8,7 @@ import 'dart:convert';
 import 'login_controller.dart';
 import 'package:intl/intl.dart';
 import 'package:flutter_application_1/excel_service.dart'; // ajusta la ruta si es necesario
+import 'offline_sync_service.dart';
 import 'dart:math';
 
 enum _ModoHistorial { semana, mes }
@@ -54,21 +55,25 @@ class _HistorialBloquePageState extends State<HistorialBloquePage> {
         '${loginController.supabaseUrl}/rest/v1/aspersiones?bloque=eq.$numeroBloque&select=*&order=fecha_registro.desc',
       );
 
-      final response = await http.get(
-        url,
-        headers: {
-          'apikey': loginController.apiKey,
-          'Authorization': 'Bearer ${loginController.apiKey}',
-        },
-      );
+      final response = await http
+          .get(
+            url,
+            headers: {
+              'apikey': loginController.apiKey,
+              'Authorization': 'Bearer ${loginController.apiKey}',
+            },
+          )
+          .timeout(const Duration(seconds: 8));
 
       if (response.statusCode == 200) {
-        return json.decode(response.body);
+        final registros = json.decode(response.body);
+        await OfflineSyncService.guardarCacheBloque(widget.bloque, registros);
+        return registros;
       } else {
-        return [];
+        return OfflineSyncService.leerCacheBloque(widget.bloque);
       }
     } catch (e) {
-      return [];
+      return OfflineSyncService.leerCacheBloque(widget.bloque);
     }
   }
 

@@ -3,6 +3,7 @@ import 'package:get/get.dart';
 import 'package:simple_barcode_scanner/simple_barcode_scanner.dart';
 import 'login_controller.dart';
 import 'preview_aspersion_page.dart';
+import 'offline_sync_service.dart';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:flutter/services.dart';
@@ -68,13 +69,15 @@ class _HomePageState extends State<HomePage> {
         '${loginController.supabaseUrl}/rest/v1/aspersiones?bloque=eq.$bloque&select=*&order=fecha_registro.desc',
       );
 
-      final response = await http.get(
-        url,
-        headers: {
-          'apikey': loginController.apiKey,
-          'Authorization': 'Bearer ${loginController.apiKey}',
-        },
-      );
+      final response = await http
+          .get(
+            url,
+            headers: {
+              'apikey': loginController.apiKey,
+              'Authorization': 'Bearer ${loginController.apiKey}',
+            },
+          )
+          .timeout(const Duration(seconds: 8));
 
       Get.back();
       dialogoCargaAbierto = false;
@@ -83,6 +86,7 @@ class _HomePageState extends State<HomePage> {
         List<dynamic> datos = json.decode(response.body);
 
         if (datos.isNotEmpty) {
+          await OfflineSyncService.guardarCacheBloque(bloque, datos);
           Get.to(
             () => PreviewAspersionPage(
               bloque: bloque,
@@ -97,11 +101,21 @@ class _HomePageState extends State<HomePage> {
           );
         }
       } else {
+        final datosOffline = await OfflineSyncService.leerCacheBloque(bloque);
+        if (datosOffline.isNotEmpty) {
+          Get.to(() => PreviewAspersionPage(bloque: bloque, registros: datosOffline));
+          return;
+        }
         Get.snackbar("Error", "No se pudo consultar el bloque");
       }
     } catch (e) {
       if (dialogoCargaAbierto) Get.back();
-      Get.snackbar("Error", "Verifica tu conexión");
+      final datosOffline = await OfflineSyncService.leerCacheBloque(bloque);
+      if (datosOffline.isNotEmpty) {
+        Get.to(() => PreviewAspersionPage(bloque: bloque, registros: datosOffline));
+      } else {
+        Get.snackbar("Error", "Sin conexión y sin datos guardados para este bloque");
+      }
     }
   }
 

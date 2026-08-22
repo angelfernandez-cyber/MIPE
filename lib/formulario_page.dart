@@ -4,6 +4,7 @@ import 'package:get/get.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'login_controller.dart';
+import 'offline_sync_service.dart';
 
 class FormularioPage extends StatefulWidget {
   const FormularioPage({super.key});
@@ -522,17 +523,30 @@ class _FormularioPageState extends State<FormularioPage> {
     print(headers);
 
     final url = Uri.parse('${loginController.supabaseUrl}/rest/v1/aspersiones');
-    final response = await http.post(
-      url,
-      headers: headers,
-      body: jsonEncode(payload),
-    );
+    http.Response response;
+    try {
+      response = await http
+          .post(url, headers: headers, body: jsonEncode(payload))
+          .timeout(const Duration(seconds: 8));
+    } catch (_) {
+      await OfflineSyncService.guardarAspersionPendiente(payload);
+      _limpiarCampos();
+      Get.snackbar(
+        'Guardado sin internet',
+        'El registro quedó pendiente y se sincronizará al recuperar conexión.',
+        backgroundColor: Colors.orange,
+        colorText: Colors.white,
+        snackPosition: SnackPosition.BOTTOM,
+      );
+      return;
+    }
 
     print('SUPABASE URL: ${loginController.supabaseUrl}');
     print('STATUS: ${response.statusCode}');
     print('BODY: ${response.body}');
 
     if (response.statusCode == 201 || response.statusCode == 200) {
+      await loginController.sincronizarPendientes();
       _limpiarCampos();
       Get.snackbar('Éxito', 'Registro guardado correctamente',
           backgroundColor: brandGreen, colorText: Colors.white, snackPosition: SnackPosition.BOTTOM);

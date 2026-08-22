@@ -1,12 +1,13 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:get/get.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
-import 'dart:io';
 import 'package:local_auth/local_auth.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:local_auth_android/local_auth_android.dart';
+import 'offline_sync_service.dart';
 
 class LoginController extends GetxController {
   var isLoading = false.obs;
@@ -87,9 +88,15 @@ class LoginController extends GetxController {
           prefs.getBool('biometria_habilitada') ?? false;
 
       if (usuarioGuardado != null) {
-        // En PC entramos directo (sin biometría)
-        if (Platform.isWindows || Platform.isMacOS || Platform.isLinux) {
+        // En web y escritorio entramos directo: el navegador no tiene la
+        // biometría nativa de local_auth.
+        if (kIsWeb || [
+          TargetPlatform.windows,
+          TargetPlatform.macOS,
+          TargetPlatform.linux,
+        ].contains(defaultTargetPlatform)) {
           loggedInUser.value = json.decode(usuarioGuardado);
+          await sincronizarPendientes();
           Get.offAllNamed('/home');
           return;
         }
@@ -143,6 +150,7 @@ class LoginController extends GetxController {
 
       if (exito) {
         loggedInUser.value = datos;
+        await sincronizarPendientes();
         Get.offAllNamed('/home');
       } else {
         message.value = "Autenticación requerida";
@@ -193,6 +201,8 @@ class LoginController extends GetxController {
 
           loggedInUser.value = userMap;
 
+          await sincronizarPendientes();
+
           final prefs = await SharedPreferences.getInstance();
           await prefs.setString('user_data', json.encode(userMap));
           await prefs.setBool('biometria_habilitada', true);
@@ -216,6 +226,13 @@ class LoginController extends GetxController {
     } finally {
       isLoading.value = false;
     }
+  }
+
+  Future<void> sincronizarPendientes() async {
+    await OfflineSyncService.sincronizarAspersiones(
+      supabaseUrl: supabaseUrl,
+      apiKey: apiKey,
+    );
   }
 
   // ─────────────────────────────────────────────
