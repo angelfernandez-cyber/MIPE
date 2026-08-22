@@ -1,6 +1,7 @@
 // lib/historial_bloque_page.dart
 import 'package:flutter/material.dart';
 import 'package:flutter_application_1/formulario_page.dart';
+import 'package:flutter_application_1/preview_aspersion_page.dart';
 import 'package:get/get.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
@@ -8,6 +9,8 @@ import 'login_controller.dart';
 import 'package:intl/intl.dart';
 import 'package:flutter_application_1/excel_service.dart'; // ajusta la ruta si es necesario
 import 'dart:math';
+
+enum _ModoHistorial { semana, mes }
 
 class HistorialBloquePage extends StatefulWidget {
   final String bloque;
@@ -20,40 +23,27 @@ class HistorialBloquePage extends StatefulWidget {
 
 class _HistorialBloquePageState extends State<HistorialBloquePage> {
   static const Color brandBlue = Color(0xFF008DC5);
+  static const Color darkBlue = Color(0xFF005F86);
   late Future<List<dynamic>> futureRegistros;
 
-  final TextEditingController _searchController = TextEditingController();
   String? _mesSeleccionado;
   List<String> _listaMeses = [];
-
-  // Agrupación por mes (etiqueta -> registros del mes)
   final Map<String, List<dynamic>> _registrosAgrupados = {};
+  _ModoHistorial _modoHistorial = _ModoHistorial.semana;
 
-  // Paginación por semanas dentro del mes seleccionado.
+  // Paginación por semanas del bloque.
   // 0 = semana más reciente del mes.
   int _indiceSemanaMes = 0;
 
   // progreso
   double _exportProgress = 0.0;
   bool _isExporting = false;
+  bool _isCancelRequested = false;
 
   @override
   void initState() {
     super.initState();
     futureRegistros = fetchRegistrosPorBloque();
-    _searchController.addListener(() {
-      setState(() {
-        // Al cambiar la búsqueda, las semanas disponibles pueden variar:
-        // volvemos a la primera (más reciente).
-        _indiceSemanaMes = 0;
-      });
-    });
-  }
-
-  @override
-  void dispose() {
-    _searchController.dispose();
-    super.dispose();
   }
 
   Future<List<dynamic>> fetchRegistrosPorBloque() async {
@@ -157,9 +147,31 @@ class _HistorialBloquePageState extends State<HistorialBloquePage> {
 
     _listaMeses = _registrosAgrupados.keys.toList();
 
-    if (_mesSeleccionado == null && _listaMeses.isNotEmpty) {
+    if ((_mesSeleccionado == null ||
+            !_registrosAgrupados.containsKey(_mesSeleccionado)) &&
+        _listaMeses.isNotEmpty) {
       _mesSeleccionado = _listaMeses[0];
     }
+  }
+
+  String _semanaDeRegistro(List<dynamic> registros) {
+    for (final registro in registros) {
+      final fecha = DateTime.tryParse(
+        registro['fecha_registro']?.toString() ?? '',
+      )?.toLocal();
+      if (fecha != null) return _numeroSemanaISO(fecha).toString();
+    }
+    return '-';
+  }
+
+  int _numeroSemanaISO(DateTime fecha) {
+    final jueves = DateTime(
+      fecha.year,
+      fecha.month,
+      fecha.day,
+    ).add(Duration(days: 4 - fecha.weekday));
+    final inicioPrimeraSemana = _inicioDeSemana(DateTime(jueves.year, 1, 4));
+    return (jueves.difference(inicioPrimeraSemana).inDays ~/ 7) + 1;
   }
 
   // -------------------------
@@ -189,7 +201,7 @@ class _HistorialBloquePageState extends State<HistorialBloquePage> {
     }
 
     final entradas = mapa.entries.toList()
-      ..sort((a, b) => b.key.compareTo(a.key)); // más reciente primero
+      ..sort((a, b) => b.key.compareTo(a.key));
     return entradas;
   }
 
@@ -201,148 +213,117 @@ class _HistorialBloquePageState extends State<HistorialBloquePage> {
     return '$f1 - $f2';
   }
 
-  List<dynamic> _filtrarRegistros(List<dynamic> registros) {
-    if (_searchController.text.isEmpty) {
-      return registros;
-    }
-    final busqueda = _searchController.text.toLowerCase();
-    return registros.where((reg) {
-      final lista = _parseProductoFieldToList(reg['producto']);
-      for (var p in lista) {
-        final nombre = (p['producto'] ?? '').toString().toLowerCase();
-        final dosis = (p['dosis'] ?? '').toString().toLowerCase();
-        final cat = (p['cat_toxic'] ?? '').toString().toLowerCase();
-        if (nombre.contains(busqueda) ||
-            dosis.contains(busqueda) ||
-            cat.contains(busqueda)) {
-          return true;
-        }
-      }
-      final raw = (reg['producto'] ?? '').toString().toLowerCase();
-      return raw.contains(busqueda);
-    }).toList();
-  }
-
-  // -------------------------
-  // Exportación con modal
-  // -------------------------
   void _exportarSemana() async {
-    if (_mesSeleccionado == null) return;
-
-    List<dynamic> registrosExportar = _registrosAgrupados[_mesSeleccionado] ?? [];
-
-    if (registrosExportar.isEmpty) {
-      Get.snackbar('Error', 'No hay datos para exportar en este mes');
-      return;
+    final registros = await futureRegistros;
+    final List<dynamic> registrosExportar;
+    if (_modoHistorial == _ModoHistorial.mes) {
+      _agruparRegistrosPorMes(registros);
+      registrosExportar = _mesSeleccionado == null
+          ? <dynamic>[]
+          : (_registrosAgrupados[_mesSeleccionado] ?? []);
+    } else {
+      final semanas = _agruparPorSemana(registros);
+      if (semanas.isEmpty) return;
+      final indice = _indiceSemanaMes.clamp(0, semanas.length - 1).toInt();
+      registrosExportar = semanas[indice].value;
     }
+    if (registrosExportar.isEmpty) return;
 
-    // Reiniciar estado
     setState(() {
       _isExporting = true;
+      _isCancelRequested = false;
       _exportProgress = 0.0;
     });
-
-    // Variable para actualizar el estado dentro del diálogo
+    final cancelToken = MIPECancellationToken();
     void Function(void Function())? dialogSetState;
 
-    // Mostrar diálogo modal (no dismissible mientras exporta)
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (context) {
-        return StatefulBuilder(builder: (context, setStateDialog) {
-          dialogSetState = setStateDialog;
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          dialogSetState = setDialogState;
           return AlertDialog(
-            title: const Text('Exportando mes'),
-            content: SizedBox(
-              width: double.maxFinite,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  ExportProgressDonut(
-                    progress: _exportProgress,
-                    size: 110,
-                    primaryColor: brandBlue,
-                    backgroundColor: const Color(0xFFE9F3F8),
-                  ),
-                  const SizedBox(height: 12),
-                  LinearProgressIndicator(
-                    value: _exportProgress,
-                    color: brandBlue,
-                    backgroundColor: Colors.grey[200],
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    '${(_exportProgress * 100).toStringAsFixed((_exportProgress * 100) >= 10 ? 0 : 1)}%',
-                    style: TextStyle(color: Colors.grey[700]),
-                  ),
-                ],
-              ),
+            title: Text(_modoHistorial == _ModoHistorial.mes
+                ? 'Exportando mes'
+                : 'Exportando semana'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                ExportProgressDonut(
+                  progress: _exportProgress,
+                  size: 110,
+                  primaryColor: brandBlue,
+                  backgroundColor: const Color(0xFFE9F3F8),
+                ),
+                const SizedBox(height: 12),
+                LinearProgressIndicator(value: _exportProgress, color: brandBlue),
+                const SizedBox(height: 8),
+                Text(_isCancelRequested
+                    ? 'Cancelando...'
+                    : '${(_exportProgress * 100).toStringAsFixed(0)}%'),
+              ],
             ),
             actions: [
-              if (!_isExporting)
-                TextButton(
-                  onPressed: () {
-                    Navigator.of(context).pop();
-                  },
-                  child: const Text('Cerrar'),
-                ),
+              TextButton.icon(
+                onPressed: _isCancelRequested
+                    ? () => Navigator.of(dialogContext).pop()
+                    : () {
+                        setState(() => _isCancelRequested = true);
+                        cancelToken.cancel();
+                      },
+                icon: Icon(_isCancelRequested
+                    ? Icons.close
+                    : Icons.cancel_outlined),
+                label: Text(_isCancelRequested ? 'Cerrar' : 'Cancelar'),
+              ),
             ],
           );
-        });
-      },
+        },
+      ),
     );
 
     try {
       final outPath = await MIPEExcelService.generarReporteMIPE(
         registrosExportar,
-        nombreArchivo: 'Bloque_${widget.bloque}_Mes_$_mesSeleccionado',
-        onProgress: (p) {
-          // Actualizar estado de la página
-          setState(() {
-            _exportProgress = p.clamp(0.0, 1.0);
-          });
-          // Actualizar estado del diálogo si está disponible
-          try {
-            dialogSetState?.call(() {});
-          } catch (_) {}
+        nombreArchivo: _modoHistorial == _ModoHistorial.mes
+            ? 'Bloque_${widget.bloque}_Mes_${_mesSeleccionado ?? 'seleccionado'}'
+            : 'Bloque_${widget.bloque}_Semana_${_semanaDeRegistro(registrosExportar)}',
+        onProgress: (progress) {
+          setState(() => _exportProgress = progress.clamp(0.0, 1.0));
+          dialogSetState?.call(() {});
         },
         abrirArchivoAlFinal: true,
         bloqueHeader: widget.bloque,
+        cancelToken: cancelToken,
       );
 
-      // Finalizado correctamente
       setState(() {
         _isExporting = false;
+        _isCancelRequested = false;
         _exportProgress = 1.0;
       });
-
-      // Cerrar diálogo si sigue abierto
-      try {
-        if (Navigator.of(context).canPop()) Navigator.of(context).pop();
-      } catch (_) {}
-
+      if (mounted && Navigator.of(context).canPop()) Navigator.of(context).pop();
       Get.snackbar('Exportado', 'Archivo generado: $outPath', snackPosition: SnackPosition.BOTTOM);
-    } catch (e) {
-      // Error durante exportación
+    } catch (error) {
       setState(() {
         _isExporting = false;
+        _isCancelRequested = false;
         _exportProgress = 0.0;
       });
-
-      // Cerrar diálogo si sigue abierto
-      try {
-        if (Navigator.of(context).canPop()) Navigator.of(context).pop();
-      } catch (_) {}
-
-      Get.snackbar('Error', 'Fallo al exportar: ${e.toString()}', snackPosition: SnackPosition.BOTTOM);
+      if (mounted && Navigator.of(context).canPop()) Navigator.of(context).pop();
+      if (error is MIPECanceledException) {
+        Get.snackbar('Exportación cancelada', 'No se creó ningún archivo.', snackPosition: SnackPosition.BOTTOM);
+      } else {
+        Get.snackbar('Error', 'Fallo al exportar: $error', snackPosition: SnackPosition.BOTTOM);
+      }
     }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFFF8F9FA),
+      backgroundColor: const Color(0xFFF2F6F8),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () {
           Get.to(
@@ -364,12 +345,7 @@ class _HistorialBloquePageState extends State<HistorialBloquePage> {
           // HEADER
           Container(
             width: double.infinity,
-            padding: const EdgeInsets.only(
-              top: 50,
-              left: 18,
-              right: 18,
-              bottom: 18,
-            ),
+            padding: const EdgeInsets.fromLTRB(18, 50, 18, 24),
             decoration: BoxDecoration(
               gradient: LinearGradient(
                 colors: [brandBlue, const Color(0xFF005F86)],
@@ -383,8 +359,8 @@ class _HistorialBloquePageState extends State<HistorialBloquePage> {
               boxShadow: [
                 BoxShadow(
                   color: brandBlue.withOpacity(0.18),
-                  blurRadius: 15,
-                  offset: const Offset(0, 6),
+                  blurRadius: 22,
+                  offset: const Offset(0, 9),
                 ),
               ],
             ),
@@ -410,17 +386,17 @@ class _HistorialBloquePageState extends State<HistorialBloquePage> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        "HISTORIAL BLOQUE ${widget.bloque}",
+                        "BLOQUE ${widget.bloque}",
                         style: const TextStyle(
                           color: Colors.white,
-                          fontSize: 18,
+                          fontSize: 24,
                           fontWeight: FontWeight.w900,
-                          letterSpacing: 0.8,
+                          letterSpacing: 1.1,
                         ),
                       ),
                       const SizedBox(height: 4),
                       const Text(
-                        "Consulta de registros y aspersiones",
+                        "Historial de aspersiones",
                         style: TextStyle(
                           color: Colors.white70,
                           fontSize: 12,
@@ -430,95 +406,147 @@ class _HistorialBloquePageState extends State<HistorialBloquePage> {
                     ],
                   ),
                 ),
+                const SizedBox(width: 10),
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withOpacity(.14),
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: Colors.white.withOpacity(.22)),
+                  ),
+                  child: const Icon(
+                    Icons.water_drop_rounded,
+                    color: Colors.white,
+                    size: 28,
+                  ),
+                ),
               ],
             ),
           ),
 
-          // BARRA DE BÚSQUEDA Y FILTROS
+          // FILTROS
           Container(
-            color: Colors.white,
-            padding: const EdgeInsets.all(16),
+            margin: const EdgeInsets.fromLTRB(14, 14, 14, 4),
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(18),
+              border: Border.all(color: const Color(0xFFE1EBEF)),
+              boxShadow: const [
+                BoxShadow(
+                  color: Color(0x0C14343D),
+                  blurRadius: 14,
+                  offset: Offset(0, 5),
+                ),
+              ],
+            ),
             child: Column(
               children: [
-                TextField(
-                  controller: _searchController,
-                  decoration: InputDecoration(
-                    hintText: 'Buscar por producto...',
-                    hintStyle: TextStyle(color: Colors.grey[400]),
-                    prefixIcon: const Icon(Icons.search, color: brandBlue),
-                    suffixIcon: _searchController.text.isNotEmpty
-                        ? IconButton(
-                            icon: const Icon(Icons.clear),
-                            onPressed: () {
-                              _searchController.clear();
-                              setState(() {});
-                            },
-                          )
-                        : null,
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
-                      borderSide: BorderSide(color: Colors.grey[300]!),
-                    ),
-                    enabledBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
-                      borderSide: BorderSide(color: Colors.grey[300]!),
-                    ),
-                    focusedBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
-                      borderSide: const BorderSide(color: brandBlue, width: 2),
-                    ),
-                    contentPadding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 12,
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 12),
                 Row(
                   children: [
-                    Expanded(
-                      child: FutureBuilder<List<dynamic>>(
-                        future: futureRegistros,
-                        builder: (context, snapshot) {
-                          if (snapshot.hasData && !snapshot.hasError) {
-                            _agruparRegistrosPorMes(snapshot.data!);
-                            return DropdownButton<String>(
-                              isExpanded: true,
-                              value: _mesSeleccionado,
-                              hint: const Text('Filtrar por mes'),
-                              items: _listaMeses.map((mes) {
-                                return DropdownMenuItem<String>(
-                                  value: mes,
-                                  child: Text(mes, overflow: TextOverflow.ellipsis),
-                                );
-                              }).toList(),
-                              onChanged: (value) {
-                                setState(() {
-                                  _mesSeleccionado = value;
-                                  // Al cambiar de mes, volver a la semana más reciente.
-                                  _indiceSemanaMes = 0;
-                                });
-                              },
-                            );
-                          }
-                          return const SizedBox();
-                        },
-                      ),
+                    SegmentedButton<_ModoHistorial>(
+                      segments: const [
+                        ButtonSegment(
+                          value: _ModoHistorial.semana,
+                          label: Text('Semana'),
+                          icon: Icon(Icons.view_week_rounded),
+                        ),
+                        ButtonSegment(
+                          value: _ModoHistorial.mes,
+                          label: Text('Mes'),
+                          icon: Icon(Icons.calendar_month_rounded),
+                        ),
+                      ],
+                      selected: {_modoHistorial},
+                      onSelectionChanged: (seleccion) {
+                        setState(() {
+                          _modoHistorial = seleccion.first;
+                          _indiceSemanaMes = 0;
+                        });
+                      },
                     ),
-                    const SizedBox(width: 8),
+                    const Spacer(),
                     Container(
                       decoration: BoxDecoration(
-                        color: brandBlue,
-                        borderRadius: BorderRadius.circular(8),
+                        color: const Color(0xFFE8F5F9),
+                        borderRadius: BorderRadius.circular(12),
                       ),
                       child: IconButton(
                         onPressed: _exportarSemana,
-                        icon: const Icon(Icons.download, color: Colors.white),
-                        tooltip: 'Exportar mes',
+                        icon: const Icon(Icons.download_rounded, color: brandBlue),
+                        tooltip: 'Exportar registros',
                       ),
                     ),
                   ],
                 ),
+                const SizedBox(height: 10),
+                if (_modoHistorial == _ModoHistorial.mes)
+                  FutureBuilder<List<dynamic>>(
+                    future: futureRegistros,
+                    builder: (context, snapshot) {
+                      if (!snapshot.hasData || snapshot.hasError) {
+                        return const SizedBox();
+                      }
+                      _agruparRegistrosPorMes(snapshot.data!);
+                      return Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFF1F7F9),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: DropdownButton<String>(
+                          isExpanded: true,
+                          icon: const Icon(Icons.keyboard_arrow_down_rounded),
+                          underline: const SizedBox(),
+                          value: _mesSeleccionado,
+                          hint: const Text('Elegir mes'),
+                          items: _listaMeses.map((mes) {
+                            return DropdownMenuItem<String>(
+                              value: mes,
+                              child: Text(mes, overflow: TextOverflow.ellipsis),
+                            );
+                          }).toList(),
+                          onChanged: (value) {
+                            setState(() => _mesSeleccionado = value);
+                          },
+                        ),
+                      );
+                    },
+                  )
+                else
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 7,
+                      ),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF1F7F9),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: const Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.date_range_rounded,
+                            color: Color(0xFF52727D),
+                            size: 16,
+                          ),
+                          SizedBox(width: 6),
+                          Text(
+                            'Semana calculada por fecha',
+                            style: TextStyle(
+                              color: Color(0xFF52727D),
+                              fontSize: 11,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
               ],
             ),
           ),
@@ -563,25 +591,9 @@ class _HistorialBloquePageState extends State<HistorialBloquePage> {
                     );
                   }
 
-                  _agruparRegistrosPorMes(snapshot.data!);
+                  final registrosBloque = snapshot.data!;
 
-                  if (_mesSeleccionado == null ||
-                      !_registrosAgrupados.containsKey(_mesSeleccionado)) {
-                    return ListView(
-                      physics: const AlwaysScrollableScrollPhysics(),
-                      children: [
-                        SizedBox(
-                          height: MediaQuery.of(context).size.height * 0.6,
-                          child: _buildEmptyState(),
-                        ),
-                      ],
-                    );
-                  }
-
-                  List<dynamic> registrosMes =
-                      _filtrarRegistros(_registrosAgrupados[_mesSeleccionado]!);
-
-                  if (registrosMes.isEmpty) {
+                  if (registrosBloque.isEmpty) {
                     return ListView(
                       physics: const AlwaysScrollableScrollPhysics(),
                       children: [
@@ -598,8 +610,76 @@ class _HistorialBloquePageState extends State<HistorialBloquePage> {
                     );
                   }
 
-                  // Paginación por semanas dentro del mes seleccionado.
-                  final semanas = _agruparPorSemana(registrosMes);
+                  if (_modoHistorial == _ModoHistorial.mes) {
+                    _agruparRegistrosPorMes(registrosBloque);
+                    final registrosMes = _mesSeleccionado == null
+                        ? <dynamic>[]
+                        : (_registrosAgrupados[_mesSeleccionado] ?? []);
+
+                    if (registrosMes.isEmpty) {
+                      return ListView(
+                        physics: const AlwaysScrollableScrollPhysics(),
+                        children: [
+                          SizedBox(
+                            height: MediaQuery.of(context).size.height * 0.6,
+                            child: _buildEmptyState(),
+                          ),
+                        ],
+                      );
+                    }
+
+                    return Column(
+                      children: [
+                        Container(
+                          margin: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFE7F3F7),
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                          child: Row(
+                            children: [
+                              const Icon(Icons.calendar_month_rounded, color: darkBlue, size: 20),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  '$_mesSeleccionado · ${registrosMes.length} registros',
+                                  style: const TextStyle(color: darkBlue, fontWeight: FontWeight.w800),
+                                ),
+                              ),
+                              Tooltip(
+                                message: 'Ver plantilla del mes',
+                                child: IconButton(
+                                  onPressed: () {
+                                    Get.to(
+                                      () => PreviewAspersionPage(
+                                        bloque: widget.bloque,
+                                        registros: registrosMes,
+                                      ),
+                                    );
+                                  },
+                                  icon: const Icon(
+                                    Icons.visibility_rounded,
+                                    color: darkBlue,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        Expanded(
+                          child: ListView.builder(
+                            physics: const AlwaysScrollableScrollPhysics(),
+                            padding: const EdgeInsets.all(16),
+                            itemCount: registrosMes.length,
+                            itemBuilder: (context, index) => _buildItemCard(registrosMes[index]),
+                          ),
+                        ),
+                      ],
+                    );
+                  }
+
+                  final semanas = _agruparPorSemana(registrosBloque);
 
                   if (semanas.isEmpty) {
                     return ListView(
@@ -653,9 +733,7 @@ class _HistorialBloquePageState extends State<HistorialBloquePage> {
     final DateTime inicio = semana.key;
     final int cantidad = semana.value.length;
 
-    // idx 0 = semana más reciente. Numeramos cronológicamente:
-    // la más antigua es "Semana 1".
-    final int numeroSemana = total - idx;
+    final String semanaRegistro = _numeroSemanaISO(inicio).toString();
 
     // Hay semana más antigua disponible cuando idx puede aumentar.
     final bool puedeMasAntigua = idx < total - 1;
@@ -663,16 +741,17 @@ class _HistorialBloquePageState extends State<HistorialBloquePage> {
     final bool puedeMasReciente = idx > 0;
 
     return Container(
-      margin: const EdgeInsets.fromLTRB(16, 14, 16, 4),
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+      margin: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 9),
       decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
+        color: const Color(0xFFE7F3F7),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: const Color(0xFFD4E8EE)),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.04),
-            blurRadius: 10,
-            offset: const Offset(0, 3),
+            color: brandBlue.withOpacity(0.06),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
           ),
         ],
       ),
@@ -693,11 +772,11 @@ class _HistorialBloquePageState extends State<HistorialBloquePage> {
               mainAxisSize: MainAxisSize.min,
               children: [
                 Text(
-                  'Semana $numeroSemana de $total',
+                  'Semana $semanaRegistro',
                   style: const TextStyle(
                     fontWeight: FontWeight.w900,
-                    fontSize: 14,
-                    color: brandBlue,
+                    fontSize: 15,
+                    color: darkBlue,
                     letterSpacing: 0.3,
                   ),
                 ),
@@ -719,6 +798,20 @@ class _HistorialBloquePageState extends State<HistorialBloquePage> {
                   ),
                 ),
               ],
+            ),
+          ),
+          Tooltip(
+            message: 'Ver plantilla de esta semana',
+            child: IconButton(
+              onPressed: () {
+                Get.to(
+                  () => PreviewAspersionPage(
+                    bloque: widget.bloque,
+                    registros: semana.value,
+                  ),
+                );
+              },
+              icon: const Icon(Icons.visibility_rounded, color: darkBlue),
             ),
           ),
           _navButton(
@@ -767,20 +860,22 @@ class _HistorialBloquePageState extends State<HistorialBloquePage> {
     DateTime fecha = DateTime.parse(reg['fecha_registro']).toLocal();
     String hora = DateFormat('hh:mm a').format(fecha);
     String fechaCorta = DateFormat("d 'de' MMMM, y", 'es').format(fecha);
+    final String semanaCalendario = _numeroSemanaISO(fecha).toString();
 
     final resumenProducto = _productoResumen(reg['producto']);
     final listaProductos = _parseProductoFieldToList(reg['producto']);
 
     return Container(
-      margin: const EdgeInsets.only(bottom: 12),
+      margin: const EdgeInsets.only(bottom: 14),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(20),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: const Color(0xFFE1EBEF)),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.04),
-            blurRadius: 12,
-            offset: const Offset(0, 4),
+            color: const Color(0x1214343D),
+            blurRadius: 16,
+            offset: const Offset(0, 6),
           ),
         ],
       ),
@@ -799,7 +894,7 @@ class _HistorialBloquePageState extends State<HistorialBloquePage> {
                   backgroundColor: brandBlue.withOpacity(0.1),
                   radius: 22,
                   child: const Icon(
-                    Icons.water_drop_rounded,
+                    Icons.water_drop_outlined,
                     color: brandBlue,
                     size: 22,
                   ),
@@ -814,7 +909,7 @@ class _HistorialBloquePageState extends State<HistorialBloquePage> {
                         style: const TextStyle(
                           fontWeight: FontWeight.bold,
                           fontSize: 15,
-                          color: Color(0xFF2D3142),
+                          color: darkBlue,
                         ),
                       ),
                       const SizedBox(height: 4),
@@ -827,9 +922,45 @@ class _HistorialBloquePageState extends State<HistorialBloquePage> {
                         ),
                       ),
                       const SizedBox(height: 4),
-                      Text(
-                        fechaCorta,
-                        style: TextStyle(color: Colors.grey[500], fontSize: 11),
+                      Row(
+                        children: [
+                          Text(
+                            fechaCorta,
+                            style: TextStyle(color: Colors.grey[500], fontSize: 11),
+                          ),
+                          const SizedBox(width: 8),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFE8F5F9),
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: Text(
+                              'SEM. $semanaCalendario',
+                              style: const TextStyle(
+                                color: darkBlue,
+                                fontSize: 9,
+                                fontWeight: FontWeight.w900,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFF1F7F9),
+                          borderRadius: BorderRadius.circular(7),
+                        ),
+                        child: Text(
+                          '${reg['tipo_aplicacion'] ?? 'Aplicación'}  ·  ${reg['equipo'] ?? 'Equipo no indicado'}',
+                          style: const TextStyle(
+                            color: Color(0xFF52727D),
+                            fontSize: 10,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
                       ),
                       if (listaProductos.isNotEmpty) ...[
                         const SizedBox(height: 6),
@@ -856,15 +987,23 @@ class _HistorialBloquePageState extends State<HistorialBloquePage> {
                     Text(
                       hora,
                       style: const TextStyle(
-                        color: brandBlue,
+                        color: darkBlue,
                         fontWeight: FontWeight.bold,
                         fontSize: 12,
                       ),
                     ),
-                    const Icon(
-                      Icons.chevron_right,
-                      size: 16,
-                      color: Colors.grey,
+                    const SizedBox(height: 8),
+                    Container(
+                      padding: const EdgeInsets.all(5),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFE8F5F9),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: const Icon(
+                        Icons.chevron_right_rounded,
+                        size: 17,
+                        color: brandBlue,
+                      ),
                     ),
                   ],
                 ),

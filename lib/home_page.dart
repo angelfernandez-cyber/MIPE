@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:simple_barcode_scanner/simple_barcode_scanner.dart';
 import 'login_controller.dart';
-import 'formulario_page.dart';
+import 'preview_aspersion_page.dart';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:flutter/services.dart';
@@ -61,10 +61,11 @@ class _HomePageState extends State<HomePage> {
       const Center(child: CircularProgressIndicator()),
       barrierDismissible: false,
     );
+    bool dialogoCargaAbierto = true;
 
     try {
       final url = Uri.parse(
-        '${loginController.supabaseUrl}/rest/v1/aspersiones?bloque=eq.$bloque&select=*&order=id.desc&limit=1',
+        '${loginController.supabaseUrl}/rest/v1/aspersiones?bloque=eq.$bloque&select=*&order=fecha_registro.desc',
       );
 
       final response = await http.get(
@@ -76,26 +77,30 @@ class _HomePageState extends State<HomePage> {
       );
 
       Get.back();
+      dialogoCargaAbierto = false;
 
       if (response.statusCode == 200) {
         List<dynamic> datos = json.decode(response.body);
 
         if (datos.isNotEmpty) {
           Get.to(
-            () => const FormularioPage(),
-            arguments: {
-              ...Map<String, dynamic>.from(datos[0]),
-              'esLecturaForzada': true,
-            },
+            () => PreviewAspersionPage(
+              bloque: bloque,
+              registros: datos,
+            ),
           );
         } else {
-          Get.to(() => const FormularioPage(), arguments: {'bloque': bloque});
+          Get.snackbar(
+            'Sin información',
+            'El bloque $bloque todavía no tiene una aspersión registrada.',
+            snackPosition: SnackPosition.BOTTOM,
+          );
         }
       } else {
         Get.snackbar("Error", "No se pudo consultar el bloque");
       }
     } catch (e) {
-      Get.back();
+      if (dialogoCargaAbierto) Get.back();
       Get.snackbar("Error", "Verifica tu conexión");
     }
   }
