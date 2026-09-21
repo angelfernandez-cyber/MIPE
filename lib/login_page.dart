@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:get/get.dart';
 import 'dart:ui';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -285,7 +286,8 @@ class _LoginPageState extends State<LoginPage> {
                                   ),
 
                                   // --- ACCESO RÁPIDO BIOMÉTRICO ---
-                                  const SizedBox(height: 20),
+                                  if (!kIsWeb) const SizedBox(height: 20),
+                                  if (!kIsWeb)
                                   IconButton(
                                     icon: const Icon(
                                       Icons.fingerprint_rounded,
@@ -314,13 +316,14 @@ class _LoginPageState extends State<LoginPage> {
                                       }
                                     },
                                   ),
-                                  const Text(
-                                    "Toque para usar biometría",
-                                    style: TextStyle(
-                                      color: Colors.grey,
-                                      fontSize: 11,
+                                  if (!kIsWeb)
+                                    const Text(
+                                      "Toque para usar biometría",
+                                      style: TextStyle(
+                                        color: Colors.grey,
+                                        fontSize: 11,
+                                      ),
                                     ),
-                                  ),
                                 ],
                               ),
                     ),

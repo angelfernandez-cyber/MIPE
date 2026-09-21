@@ -18,6 +18,8 @@ class MIPEExcelService {
     bool abrirArchivoAlFinal = true,
     String? bloqueHeader,
     String? jefeMipe,
+    bool protegerHoja = false,
+    MIPECancellationToken? cancelToken,
   }) async {
     if (registros.isEmpty) throw Exception('No hay datos para generar el reporte.');
 
@@ -28,6 +30,10 @@ class MIPEExcelService {
     final receivePort = ReceivePort();
     final errorPort = ReceivePort();
     final exitPort = ReceivePort();
+    final cancelPort = ReceivePort();
+    final cancelPortSubscription = cancelPort.listen((message) {
+      if (message is SendPort) cancelToken?._attach(message);
+    });
 
     final payload = <String, dynamic>{
       'sendPort': receivePort.sendPort,
@@ -36,6 +42,8 @@ class MIPEExcelService {
       'nombreArchivo': nombreArchivo,
       'bloqueHeader': bloqueHeader,
       'jefeMipe': jefeMipe,
+      'protegerHoja': protegerHoja,
+      'cancelPort': cancelPort.sendPort,
     };
 
     if (kIsWeb) {
@@ -58,6 +66,13 @@ class MIPEExcelService {
     sub = receivePort.listen((dynamic message) async {
       try {
         if (message is Map) {
+          if (message['cancelado'] == true) {
+            if (!completer.isCompleted) {
+              completer.completeError(const MIPECanceledException());
+            }
+            return;
+          }
+
           // progreso desde el isolate
           if (message.containsKey('progress')) {
             final p = (message['progress'] as num).toDouble();
@@ -115,6 +130,8 @@ class MIPEExcelService {
       receivePort.close();
       errorPort.close();
       exitPort.close();
+      cancelPort.close();
+      await cancelPortSubscription.cancel();
       return result;
     } catch (e) {
       await sub?.cancel();
@@ -123,6 +140,8 @@ class MIPEExcelService {
       receivePort.close();
       errorPort.close();
       exitPort.close();
+      cancelPort.close();
+      await cancelPortSubscription.cancel();
       rethrow;
     }
   }
@@ -135,6 +154,14 @@ class MIPEExcelService {
     final String nombreArchivo = msg['nombreArchivo'] as String? ?? 'MIPE';
     final String? bloqueHeader = msg['bloqueHeader'] as String?;
     final String? jefeMipe = msg['jefeMipe'] as String?;
+    final bool protegerHoja = msg['protegerHoja'] as bool? ?? false;
+    final SendPort cancelPort = msg['cancelPort'] as SendPort;
+    bool cancelado = false;
+    final cancelSubscription = ReceivePort();
+    cancelPort.send(cancelSubscription.sendPort);
+    cancelSubscription.listen((message) {
+      if (message == 'cancelar') cancelado = true;
+    });
 
     _generateExcelBytesInIsolate(
       sendPort: sendPort,
@@ -143,7 +170,10 @@ class MIPEExcelService {
       nombreArchivo: nombreArchivo,
       bloqueHeader: bloqueHeader,
       jefeMipe: jefeMipe,
+      protegerHoja: protegerHoja,
+      estaCancelado: () => cancelado,
     );
+    cancelSubscription.close();
   }
 
   static Future<void> _generateExcelBytesInIsolate({
@@ -153,6 +183,8 @@ class MIPEExcelService {
     required String nombreArchivo,
     String? bloqueHeader,
     String? jefeMipe,
+    bool protegerHoja = false,
+    bool Function()? estaCancelado,
   }) async {
     try {
       sendPort.send({'progress': 0.02});
@@ -216,11 +248,23 @@ class MIPEExcelService {
       int bloqueIndex = 0;
 
       for (var registro in registros) {
+        if (estaCancelado?.call() == true) {
+          sendPort.send({'cancelado': true});
+          return;
+        }
         if (registro is! Map<String, dynamic>) {
           processed++;
           sendPort.send({'progress': (processed / total) * 0.7});
           bloqueIndex++;
           continue;
+        }
+
+        if (bloqueIndex % 8 == 0) {
+          await Future<void>.delayed(Duration.zero);
+          if (estaCancelado?.call() == true) {
+            sendPort.send({'cancelado': true});
+            return;
+          }
         }
 
         final int startRow = filaPlantillaStart + bloqueIndex * filasPorBloque;
@@ -293,8 +337,15 @@ class MIPEExcelService {
             sheetContent = _updateCellValue(sheetContent, 'N${row}', i < catToxic.length ? catToxic[i] : '', defaultStyleId: styleToUse);
           }
 
-          // Otros campos en la fila inicial del bloque
-          sheetContent = _updateCellValue(sheetContent, 'G${startRow}', humedadRelativa, defaultStyleId: styleToUse);
+          // Humedad y otros campos del registro
+          for (int i = 0; i < filasPorBloque; i++) {
+            sheetContent = _updateCellValue(
+              sheetContent,
+              'G${startRow + i}',
+              humedadRelativa,
+              defaultStyleId: styleToUse,
+            );
+          }
           sheetContent = _updateCellValue(sheetContent, 'O${startRow}', volumenCama, defaultStyleId: styleToUse);
           sheetContent = _updateCellValue(sheetContent, 'P${startRow}', direccion, defaultStyleId: styleToUse);
           sheetContent = _updateCellValue(sheetContent, 'Q${startRow}', numCamas, defaultStyleId: styleToUse);
@@ -320,6 +371,7 @@ class MIPEExcelService {
           // Temperatura por fila
           for (int i = 0; i < filasPorBloque; i++) {
             valueMap['F${destinoStartRow + i}'] = temperatura;
+            valueMap['G${destinoStartRow + i}'] = humedadRelativa;
           }
 
           // Blancos por fila (usar lista)
@@ -390,6 +442,13 @@ class MIPEExcelService {
 
         // Si quieres quitar estilos de la columna A (por ejemplo), se hace aquí
         sheetContent = _quitarEstilosColumnaA(sheetContent, filasConDatos);
+      }
+
+      if (protegerHoja && !sheetContent.contains('<sheetProtection')) {
+        sheetContent = sheetContent.replaceFirst(
+          '</sheetData>',
+          '</sheetData><sheetProtection sheet="1" objects="1" scenarios="1"/>',
+        );
       }
 
       sendPort.send({'progress': 0.88});
@@ -967,4 +1026,23 @@ class MIPEExcelService {
 class _IsolatePayload {
   final Map<String, dynamic> message;
   _IsolatePayload(this.message);
+}
+
+class MIPECancellationToken {
+  SendPort? _sendPort;
+  bool _cancelRequested = false;
+
+  void _attach(SendPort sendPort) {
+    _sendPort = sendPort;
+    if (_cancelRequested) sendPort.send('cancelar');
+  }
+
+  void cancel() {
+    _cancelRequested = true;
+    _sendPort?.send('cancelar');
+  }
+}
+
+class MIPECanceledException implements Exception {
+  const MIPECanceledException();
 }
