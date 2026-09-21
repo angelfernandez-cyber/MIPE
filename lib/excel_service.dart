@@ -1,12 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:isolate';
-import 'dart:io';
 import 'dart:typed_data';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart' show rootBundle, ByteData;
 import 'package:archive/archive.dart';
-import 'package:path_provider/path_provider.dart';
-import 'package:open_filex/open_filex.dart';
+import 'excel_file_saver.dart';
 
 class MIPEExcelService {
   /// Genera el reporte MIPE en un Isolate y reporta progreso 0.0..1.0 vía onProgress.
@@ -39,8 +38,17 @@ class MIPEExcelService {
       'jefeMipe': jefeMipe,
     };
 
-    await Isolate.spawn<_IsolatePayload>(_isolateEntry, _IsolatePayload(payload),
-        onError: errorPort.sendPort, onExit: exitPort.sendPort, errorsAreFatal: false);
+    if (kIsWeb) {
+        Future<void>(() => _generateExcelBytesInIsolate(sendPort: receivePort.sendPort,
+          templateBytes: templateBytes,
+          registros: registros,
+          nombreArchivo: nombreArchivo,
+          bloqueHeader: bloqueHeader,
+          jefeMipe: jefeMipe));
+    } else {
+      await Isolate.spawn<_IsolatePayload>(_isolateEntry, _IsolatePayload(payload),
+          onError: errorPort.sendPort, onExit: exitPort.sendPort, errorsAreFatal: false);
+    }
 
     final completer = Completer<String>();
     StreamSubscription? sub;
@@ -63,35 +71,12 @@ class MIPEExcelService {
           if (message.containsKey('doneBytes')) {
             final dynamic raw = message['doneBytes'];
             final Uint8List encodedBytes = raw is Uint8List ? raw : Uint8List.fromList(List<int>.from(raw as List));
-            Directory? directory;
-            try {
-              directory = await getExternalStorageDirectory();
-            } catch (_) {
-              directory = null;
-            }
-            if (directory == null) {
-              directory = await getApplicationDocumentsDirectory();
-            }
-            if (directory == null) {
-              if (!completer.isCompleted) completer.completeError(Exception('No se pudo acceder al almacenamiento del dispositivo.'));
-              return;
-            }
-
-            final outPath = '${directory.path}/MIPE_${nombreArchivo}_${DateTime.now().millisecondsSinceEpoch}.xlsx';
-            final outFile = File(outPath);
-            await outFile.writeAsBytes(encodedBytes, flush: true);
+            final outPath = await saveExcelBytes(encodedBytes,
+                'MIPE_${nombreArchivo}_${DateTime.now().millisecondsSinceEpoch}.xlsx');
 
             try {
               onProgress?.call(1.0);
             } catch (_) {}
-
-            if (abrirArchivoAlFinal) {
-              try {
-                await OpenFilex.open(outPath);
-              } catch (e) {
-                print('No se pudo abrir el archivo automáticamente: $e');
-              }
-            }
 
             if (!completer.isCompleted) completer.complete(outPath);
             return;
@@ -142,7 +127,6 @@ class MIPEExcelService {
     }
   }
 
-  // ----------------- Isolate entry -----------------
   static void _isolateEntry(_IsolatePayload payload) {
     final Map<String, dynamic> msg = payload.message;
     final SendPort sendPort = msg['sendPort'] as SendPort;

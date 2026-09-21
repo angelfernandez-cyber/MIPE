@@ -4,7 +4,9 @@ import 'package:get/get.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'package:intl/intl.dart'; // Asegúrate de tener intl en tu pubspec.yaml
+import 'dart:async';
 import 'login_controller.dart';
+import 'offline_sync_service.dart';
 
 class AseguramientoPage extends StatefulWidget {
   final Map<String, dynamic>? dataInicial; // Datos que vienen del historial
@@ -32,20 +34,30 @@ class _AseguramientoPageState extends State<AseguramientoPage> {
   final _semanaController = TextEditingController();
   final _productoController = TextEditingController();
   final _proveedorController = TextEditingController();
-  final _presentacionController = TextEditingController(); // Unidad de medida (Texto)
+  final _formulaCController = TextEditingController();
+  final _catToxicController = TextEditingController();
+  final _presentacionController =
+      TextEditingController(); // Unidad de medida (Texto)
   final _unidadesController = TextEditingController(); // Total unidades (Int)
   final _loteController = TextEditingController(); // # Lote (Texto)
   final _vencimientoController = TextEditingController(); // Fecha (Texto/Date)
-  final _cantidadController = TextEditingController(); // Cantidad cc/g (Numeric)
+  final _cantidadController =
+      TextEditingController(); // Cantidad cc/g (Numeric)
   final _colorController = TextEditingController(); // Color (Texto)
+  final _otroColorController = TextEditingController();
   final _phController = TextEditingController(); // pH (Numeric)
   final _densidadController = TextEditingController(); // Densidad (Numeric)
   final _obsController = TextEditingController(); // Observaciones (Texto)
   final _aseguraController = TextEditingController();
   final _autorizaController = TextEditingController();
 
-  // --- campo para que el usuario escriba porcentaje (ej: "100" o "100%") ---
-  final _cumplimientoController = TextEditingController();
+  final List<int> _semanas = [];
+  final List<String> _productos = [];
+  final List<String> _proveedores = [];
+  final List<String> _presentaciones = [];
+  final List<String> _colores = [];
+  final List<String> _formulasC = ['SI', 'NO'];
+  final List<String> _categoriasToxicologicas = ['IA', 'IB', 'II', 'III', 'IV'];
 
   // --- ESTADOS BOTONES SELECCIÓN ---
   String _estadoEtiqueta = 'CUMPLE';
@@ -64,28 +76,25 @@ class _AseguramientoPageState extends State<AseguramientoPage> {
       _semanaController.text = widget.dataInicial!['semana']?.toString() ?? '';
       _productoController.text = widget.dataInicial!['nombre_producto'] ?? '';
       _proveedorController.text = widget.dataInicial!['proveedor'] ?? '';
+      _formulaCController.text = widget.dataInicial!['formula_c'] ?? '';
+      _catToxicController.text = widget.dataInicial!['cat_toxic'] ?? '';
       _presentacionController.text = widget.dataInicial!['presentacion'] ?? '';
-      _unidadesController.text = widget.dataInicial!['total_unidades']?.toString() ?? '';
+      _unidadesController.text =
+          widget.dataInicial!['total_unidades']?.toString() ?? '';
       _loteController.text = widget.dataInicial!['lote'] ?? '';
-      _vencimientoController.text = widget.dataInicial!['fecha_vencimiento'] ?? '';
-      _cantidadController.text = widget.dataInicial!['cantidad_cc_g']?.toString() ?? '';
+      _vencimientoController.text =
+          widget.dataInicial!['fecha_vencimiento'] ?? '';
+      _cantidadController.text =
+          widget.dataInicial!['cantidad_cc_g']?.toString() ?? '';
       _colorController.text = widget.dataInicial!['color'] ?? '';
+      _otroColorController.text = widget.dataInicial!['color'] ?? '';
       _phController.text = widget.dataInicial!['ph']?.toString() ?? '';
-      _densidadController.text = widget.dataInicial!['densidad']?.toString() ?? '';
+      _densidadController.text =
+          widget.dataInicial!['densidad']?.toString() ?? '';
       _obsController.text = widget.dataInicial!['observaciones'] ?? '';
-      _aseguraController.text = widget.dataInicial?['identificacion_asegura'] ?? '';
+      _aseguraController.text =
+          widget.dataInicial?['identificacion_asegura'] ?? '';
       _autorizaController.text = widget.dataInicial?['autorizacion'] ?? '';
-
-      // Si viene cumplimiento (texto con % o sin) en los datos, mostrarlo en el controlador
-      if (widget.dataInicial!['cumplimiento'] != null) {
-        _cumplimientoController.text = widget.dataInicial!['cumplimiento'].toString();
-      } else if (widget.dataInicial!['cumplimiento_pct'] != null) {
-        // fallback: si solo existe cumplimiento_pct (texto), mostrarlo con %
-        final raw = widget.dataInicial!['cumplimiento_pct'].toString().trim();
-        if (raw.isNotEmpty) {
-          _cumplimientoController.text = raw.endsWith('%') ? raw : '$raw%';
-        }
-      }
 
       // Actualizamos los estados de los botones
       _estadoEtiqueta = widget.dataInicial!['estado_etiqueta'] ?? 'CUMPLE';
@@ -93,10 +102,32 @@ class _AseguramientoPageState extends State<AseguramientoPage> {
       _sellos = widget.dataInicial!['sellos'] ?? 'CUMPLE';
       _puntosextraccion = widget.dataInicial!['puntos_extraccion'] ?? 'CUMPLE';
 
-      // Cumplimiento textual: si viene 'NO CUMPLE' lo respetamos, cualquier otro valor lo tratamos como 'CUMPLE'
-      final incomingCumpl = (widget.dataInicial!['cumplimiento'] ?? '').toString().toUpperCase();
-      _cumplimiento = incomingCumpl == 'NO CUMPLE' ? 'NO CUMPLE' : 'CUMPLE';
+      final incomingCumpl =
+          (widget.dataInicial!['cumplimiento'] ?? '').toString().toUpperCase();
+      _cumplimiento =
+          incomingCumpl == 'NO CUMPLE' || incomingCumpl == '0%'
+              ? 'NO CUMPLE'
+              : 'CUMPLE';
+    } else {
+      _semanaController.text = _semanaActual().toString();
     }
+    _cargarCatalogos();
+  }
+
+  int _semanaActual() {
+    final hoy = DateTime.now();
+    final juevesActual = hoy.add(
+      Duration(days: DateTime.thursday - hoy.weekday),
+    );
+    final cuatroDeEnero = DateTime(juevesActual.year, 1, 4);
+    final primerJueves = cuatroDeEnero.add(
+      Duration(days: DateTime.thursday - cuatroDeEnero.weekday),
+    );
+    final semana =
+      1 + juevesActual.difference(primerJueves).inDays ~/ 7;
+
+    // El catálogo de semanas de la aplicación llega hasta la semana 52.
+    return semana > 52 ? 52 : semana;
   }
 
   @override
@@ -104,19 +135,102 @@ class _AseguramientoPageState extends State<AseguramientoPage> {
     _semanaController.dispose();
     _productoController.dispose();
     _proveedorController.dispose();
+    _formulaCController.dispose();
+    _catToxicController.dispose();
     _presentacionController.dispose();
     _unidadesController.dispose();
     _loteController.dispose();
     _vencimientoController.dispose();
     _cantidadController.dispose();
     _colorController.dispose();
+    _otroColorController.dispose();
     _phController.dispose();
     _densidadController.dispose();
     _obsController.dispose();
     _aseguraController.dispose();
     _autorizaController.dispose();
-    _cumplimientoController.dispose();
     super.dispose();
+  }
+
+  Future<List<dynamic>> _fetchCatalogo(
+    String table,
+    String select, {
+    String? order,
+  }) async {
+    final uri = Uri.parse(
+      '${loginController.supabaseUrl}/rest/v1/$table',
+    ).replace(
+      queryParameters: {'select': select, if (order != null) 'order': order},
+    );
+    return OfflineSyncService.fetchListWithCache(
+      cacheKey: 'cache_catalogo_$table',
+      url: uri,
+      headers: {
+        'apikey': loginController.apiKey,
+        'Authorization': 'Bearer ${loginController.apiKey}',
+      },
+    );
+  }
+
+  Future<void> _cargarCatalogos() async {
+    try {
+      final resultados = await Future.wait([
+        _fetchCatalogo('aseguramiento_semanas', 'numero', order: 'numero.asc'),
+        _fetchCatalogo(
+          'aseguramiento_productos',
+          'nombre',
+          order: 'nombre.asc',
+        ),
+        _fetchCatalogo(
+          'aseguramiento_proveedores',
+          'nombre',
+          order: 'nombre.asc',
+        ),
+        _fetchCatalogo(
+          'aseguramiento_presentaciones',
+          'nombre',
+          order: 'nombre.asc',
+        ),
+        _fetchCatalogo('aseguramiento_colores', 'nombre', order: 'nombre.asc'),
+      ]);
+      if (!mounted) return;
+      setState(() {
+        _semanas
+          ..clear()
+          ..addAll(
+            resultados[0].map((item) => (item['numero'] as num).toInt()),
+          );
+        _productos
+          ..clear()
+          ..addAll(resultados[1].map((item) => item['nombre'].toString()));
+        _proveedores
+          ..clear()
+          ..addAll(resultados[2].map((item) => item['nombre'].toString()));
+        _presentaciones
+          ..clear()
+          ..addAll(resultados[3].map((item) => item['nombre'].toString()));
+        _colores
+          ..clear()
+          ..addAll(resultados[4].map((item) => item['nombre'].toString()));
+        if (!_colores.contains('OTRO')) _colores.add('OTRO');
+        final colorGuardado = _colorController.text.trim().toUpperCase();
+        if (colorGuardado.isNotEmpty && !_colores.contains(colorGuardado)) {
+          _colorController.text = 'OTRO';
+          _otroColorController.text = colorGuardado;
+        } else if (colorGuardado == 'OTRO') {
+          _colorController.text = 'OTRO';
+          _otroColorController.clear();
+        }
+      });
+    } catch (e) {
+      if (!mounted) return;
+      Get.snackbar(
+        'Catálogos no disponibles',
+        'Verifique que las tablas de Supabase estén creadas: $e',
+        snackPosition: SnackPosition.BOTTOM,
+        duration: const Duration(seconds: 8),
+      );
+    }
   }
 
   // Función para seleccionar fecha de vencimiento
@@ -135,27 +249,10 @@ class _AseguramientoPageState extends State<AseguramientoPage> {
     }
   }
 
-  // Normaliza entradas como "100", "100%", " 75% ", "75.5" -> texto con porcentaje "100%"
-  String? _normalizePctText(String? raw) {
-    if (raw == null) return null;
-    final s = raw.trim();
-    if (s.isEmpty) return null;
-    final cleaned = s.endsWith('%') ? s.substring(0, s.length - 1).trim() : s;
-    final int? asInt = int.tryParse(cleaned);
-    if (asInt != null) {
-      final int clamped = asInt < 0 ? 0 : (asInt > 100 ? 100 : asInt);
-      return '$clamped%';
-    }
-    final double? asDouble = double.tryParse(cleaned.replaceAll(',', '.'));
-    if (asDouble == null) return null;
-    final int rounded = asDouble.round();
-    final int clamped = rounded < 0 ? 0 : (rounded > 100 ? 100 : rounded);
-    return '$clamped%';
-  }
-
   Future<void> _guardarEnBaseDeDatos() async {
     if (!_formKey.currentState!.validate()) return;
     setState(() => _isSaving = true);
+    Map<String, dynamic> body = {};
 
     try {
       // Helper local para convertir a mayúsculas y devolver null si vacío
@@ -165,24 +262,8 @@ class _AseguramientoPageState extends State<AseguramientoPage> {
         return t.isEmpty ? null : t.toUpperCase();
       }
 
-      // Normalizar cumplimiento como texto con % (si el usuario escribió algo)
-      final String? cumplimientoTexto = _normalizePctText(
-        _cumplimientoController.text.isNotEmpty
-            ? _cumplimientoController.text
-            : (_cumplimiento == 'CUMPLE' ? '100' : '0'),
-      );
-
-      // Determinar valor final a guardar en la columna 'cumplimiento'
-      String? cumplimientoToSave;
-      if (cumplimientoTexto != null) {
-        cumplimientoToSave = cumplimientoTexto; // e.g. "100%"
-      } else {
-        // fallback: si por alguna razón no hay texto, usar selector
-        cumplimientoToSave = _cumplimiento == 'NO CUMPLE' ? '0%' : '100%';
-      }
-
       // Campos numéricos y fecha se mantienen igual; los textos se pasan por up(...)
-      final Map<String, dynamic> body = {
+      body = {
         'semana': int.tryParse(_semanaController.text),
 
         // Fecha del registro (se guarda en formato ISO yyyy-MM-dd)
@@ -191,12 +272,17 @@ class _AseguramientoPageState extends State<AseguramientoPage> {
         // Campos de texto convertidos a MAYÚSCULAS
         'nombre_producto': up(_productoController.text),
         'proveedor': up(_proveedorController.text),
+        'formula_c': up(_formulaCController.text),
+        'cat_toxic': up(_catToxicController.text),
 
         'presentacion': up(_presentacionController.text),
         'total_unidades': int.tryParse(_unidadesController.text) ?? 0,
 
         'lote': up(_loteController.text),
-        'fecha_vencimiento': _vencimientoController.text.isEmpty ? null : _vencimientoController.text,
+        'fecha_vencimiento':
+            _vencimientoController.text.isEmpty
+                ? null
+                : _vencimientoController.text,
 
         // Estados ya vienen en mayúsculas (CUMPLE / NO CUMPLE)
         'estado_etiqueta': _estadoEtiqueta,
@@ -204,40 +290,49 @@ class _AseguramientoPageState extends State<AseguramientoPage> {
         'sellos': _sellos,
         'puntos_extraccion': _puntosextraccion,
 
-        // Guardar el texto con porcentaje en la columna 'cumplimiento'
-        'cumplimiento': cumplimientoToSave,
+        'cumplimiento': _cumplimiento == 'CUMPLE' ? '100%' : '0%',
 
         // Campos numéricos
         // cantidad como entero (si está vacío queda 0)
         'cantidad_cc_g': int.tryParse(_cantidadController.text) ?? 0,
-        'color': up(_colorController.text) ?? "NO DEFINIDO",
+        'color':
+            _colorController.text == 'OTRO'
+                ? (up(_otroColorController.text) ?? 'NO DEFINIDO')
+                : (up(_colorController.text) ?? 'NO DEFINIDO'),
 
         // ph y densidad NO obligatorios: si están vacíos se envía null
-        'ph': _phController.text.trim().isEmpty
-            ? null
-            : (int.tryParse(_phController.text) ?? (double.tryParse(_phController.text)?.round())),
-        'densidad': _densidadController.text.trim().isEmpty
-            ? null
-            : (double.tryParse(_densidadController.text) ?? null),
+        'ph':
+            _phController.text.trim().isEmpty
+                ? null
+                : (int.tryParse(_phController.text) ??
+                    (double.tryParse(_phController.text)?.round())),
+        'densidad':
+            _densidadController.text.trim().isEmpty
+                ? null
+                : (double.tryParse(_densidadController.text) ?? null),
 
-        'observaciones': up(_obsController.text),
+        'observaciones': up(_obsController.text) ?? 'N/A',
         'autorizacion': up(_autorizaController.text),
 
         'identificacion_asegura': up(_aseguraController.text),
       };
 
-      final url = Uri.parse('${loginController.supabaseUrl}/rest/v1/aseguramiento_plaguicidas');
-
-      final response = await http.post(
-        url,
-        headers: {
-          'apikey': loginController.apiKey,
-          'Authorization': 'Bearer ${loginController.apiKey}',
-          'Content-Type': 'application/json',
-          'Prefer': 'return=minimal',
-        },
-        body: jsonEncode(body),
+      final url = Uri.parse(
+        '${loginController.supabaseUrl}/rest/v1/aseguramiento_plaguicidas',
       );
+
+      final response = await http
+          .post(
+            url,
+            headers: {
+              'apikey': loginController.apiKey,
+              'Authorization': 'Bearer ${loginController.apiKey}',
+              'Content-Type': 'application/json',
+              'Prefer': 'return=minimal',
+            },
+            body: jsonEncode(body),
+          )
+          .timeout(const Duration(seconds: 8));
 
       if (response.statusCode == 201 || response.statusCode == 200) {
         Get.snackbar(
@@ -250,22 +345,23 @@ class _AseguramientoPageState extends State<AseguramientoPage> {
 
         // Limpiar formulario
         _formKey.currentState?.reset();
-        _semanaController.clear();
+        _semanaController.text = _semanaActual().toString();
         _productoController.clear();
         _proveedorController.clear();
+        _formulaCController.clear();
+        _catToxicController.clear();
         _presentacionController.clear();
         _unidadesController.clear();
         _loteController.clear();
         _vencimientoController.clear();
         _cantidadController.clear();
         _colorController.clear();
+        _otroColorController.clear();
         _phController.clear();
         _densidadController.clear();
         _obsController.clear();
         _aseguraController.clear();
         _autorizaController.clear();
-        _cumplimientoController.clear();
-
         setState(() {
           _estadoEtiqueta = 'CUMPLE';
           _estadoTapa = 'CUMPLE';
@@ -276,6 +372,18 @@ class _AseguramientoPageState extends State<AseguramientoPage> {
       } else {
         throw Exception('Error de Supabase: ${response.body}');
       }
+    } on TimeoutException {
+      await OfflineSyncService.enqueue('aseguramiento_plaguicidas', body);
+      Get.snackbar(
+        'Guardado sin internet',
+        'Se sincronizará automáticamente al recuperar conexión',
+      );
+    } on http.ClientException {
+      await OfflineSyncService.enqueue('aseguramiento_plaguicidas', body);
+      Get.snackbar(
+        'Guardado sin internet',
+        'Se sincronizará automáticamente al recuperar conexión',
+      );
     } catch (e) {
       Get.snackbar(
         'Error',
@@ -305,16 +413,11 @@ class _AseguramientoPageState extends State<AseguramientoPage> {
         flexibleSpace: Container(
           decoration: const BoxDecoration(
             gradient: LinearGradient(
-              colors: [
-                Color(0xFF008DC5),
-                Color(0xFF005F86),
-              ],
+              colors: [Color(0xFF008DC5), Color(0xFF005F86)],
               begin: Alignment.topLeft,
               end: Alignment.bottomRight,
             ),
-            borderRadius: BorderRadius.vertical(
-              bottom: Radius.circular(28),
-            ),
+            borderRadius: BorderRadius.vertical(bottom: Radius.circular(28)),
           ),
         ),
 
@@ -382,44 +485,77 @@ class _AseguramientoPageState extends State<AseguramientoPage> {
               Row(
                 children: [
                   Expanded(
-                    child: _buildNumberInput(
-                      _semanaController,
-                      'Semana',
-                      Icons.calendar_today,
-                      isDecimal: false, // Entero para la semana
+                    child: _buildDropdown<int>(
+                      label: 'Semana',
+                      icon: Icons.calendar_today,
+                      values: _semanas,
+                      selectedValue: int.tryParse(_semanaController.text),
+                      labelForValue: (value) => value.toString(),
+                      onChanged:
+                          (value) => setState(
+                            () =>
+                                _semanaController.text =
+                                    value?.toString() ?? '',
+                          ),
                     ),
                   ),
                   const SizedBox(width: 10),
                   Expanded(
-                    child: _buildTextField(
-                      _productoController,
-                      'Nombre Producto',
-                      Icons.inventory,
+                    child: _buildDropdown<String>(
+                      label: 'Nombre Producto',
+                      icon: Icons.inventory,
+                      values: _productos,
+                      selectedValue:
+                          _productoController.text.isEmpty
+                              ? null
+                              : _productoController.text,
+                      labelForValue: (value) => value,
+                      onChanged:
+                          (value) => setState(
+                            () => _productoController.text = value ?? '',
+                          ),
                     ),
                   ),
                 ],
               ),
 
-              _buildTextField(
-                _proveedorController,
-                'Proveedor',
-                Icons.business,
+              _buildDropdown<String>(
+                label: 'Casa Comercial',
+                icon: Icons.business,
+                values: _proveedores,
+                selectedValue:
+                    _proveedorController.text.isEmpty
+                        ? null
+                        : _proveedorController.text,
+                labelForValue: (value) => value,
+                onChanged:
+                    (value) =>
+                        setState(() => _proveedorController.text = value ?? ''),
               ),
 
               Row(
                 children: [
                   Expanded(
-                    child: _buildTextField(
-                      _presentacionController,
-                      'Presentación-(Cantidad)',
-                      Icons.layers,
+                    child: _buildDropdown<String>(
+                      label: 'Presentación-(Cantidad)',
+                      icon: Icons.layers,
+                      values: _presentaciones,
+                      selectedValue:
+                          _presentacionController.text.isEmpty
+                              ? null
+                              : _presentacionController.text,
+                      labelForValue: (value) => value,
+                      onChanged:
+                          (value) => setState(
+                            () => _presentacionController.text = value ?? '',
+                          ),
                     ),
                   ),
                   const SizedBox(width: 10),
                   Expanded(
                     child: _buildNumberInput(
                       _unidadesController,
-                      'Total Unidades',
+                      'Cantidad',
                       Icons.numbers,
                       isDecimal: false, // Entero para unidades físicas
                     ),
@@ -435,13 +571,52 @@ class _AseguramientoPageState extends State<AseguramientoPage> {
                 ],
               ),
 
+              Row(
+                children: [
+                  Expanded(
+                    child: _buildDropdown<String>(
+                      label: 'Formula C',
+                      icon: Icons.science,
+                      values: _formulasC,
+                      selectedValue:
+                          _formulaCController.text.isEmpty
+                              ? null
+                              : _formulaCController.text,
+                      labelForValue: (value) => value,
+                      onChanged:
+                          (value) => setState(
+                            () => _formulaCController.text = value ?? '',
+                          ),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: _buildDropdown<String>(
+                      label: 'Cat Toxic',
+                      icon: Icons.warning_amber,
+                      values: _categoriasToxicologicas,
+                      selectedValue:
+                          _catToxicController.text.isEmpty
+                              ? null
+                              : _catToxicController.text,
+                      labelForValue: (value) => value,
+                      onChanged:
+                          (value) => setState(
+                            () => _catToxicController.text = value ?? '',
+                          ),
+                    ),
+                  ),
+                ],
+              ),
+
               _buildTextField(
                 _vencimientoController,
                 'Fecha de Vencimiento',
                 Icons.event,
-                onTap: () => _selectDate(
-                  context,
-                ), // Aquí le decimos que abra el calendario
+                onTap:
+                    () => _selectDate(
+                      context,
+                    ), // Aquí le decimos que abra el calendario
                 readOnly: true, // Aquí le decimos que no abra el teclado
               ),
 
@@ -467,39 +642,8 @@ class _AseguramientoPageState extends State<AseguramientoPage> {
                 (val) => setState(() => _puntosextraccion = val),
               ),
 
-              // selector de cumplimiento textual (solo UI)
               _sectionTitle("CUMPLIMIENTO"),
               _buildCumplimientoSelector(),
-
-              // campo donde el usuario puede escribir porcentaje "100" o "100%"
-              Padding(
-                padding: const EdgeInsets.only(bottom: 12),
-                child: AbsorbPointer(
-                  absorbing: widget.esLectura,
-                  child: TextFormField(
-                    controller: _cumplimientoController,
-                    keyboardType: TextInputType.text,
-                    inputFormatters: [
-                      FilteringTextInputFormatter.allow(RegExp(r'^[0-9%\s.,-]*$')),
-                    ],
-                    style: const TextStyle(fontSize: 14),
-                    decoration: InputDecoration(
-                      labelText: 'Cumplimiento (%) - escribe 100 o 100%',
-                      prefixIcon: Icon(Icons.percent, color: brandBlue, size: 20),
-                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-                      filled: true,
-                      fillColor: widget.esLectura ? Colors.grey[200] : Colors.grey[50],
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                    ),
-                    validator: (v) {
-                      if (v == null || v.trim().isEmpty) return null; // opcional
-                      final normalized = _normalizePctText(v);
-                      if (normalized == null) return 'Ingrese un porcentaje válido 0-100';
-                      return null;
-                    },
-                  ),
-                ),
-              ),
 
               _sectionTitle("ANÁLISIS FÍSICO-QUÍMICO"),
               Row(
@@ -514,14 +658,30 @@ class _AseguramientoPageState extends State<AseguramientoPage> {
                   ),
                   const SizedBox(width: 10),
                   Expanded(
-                    child: _buildTextField(
-                      _colorController,
-                      'Color',
-                      Icons.colorize,
+                    child: _buildDropdown<String>(
+                      label: 'Color',
+                      icon: Icons.colorize,
+                      values: _colores,
+                      selectedValue:
+                          _colorController.text.isEmpty
+                              ? null
+                              : _colorController.text,
+                      labelForValue: (value) => value,
+                      onChanged:
+                          (value) => setState(() {
+                            _colorController.text = value ?? '';
+                            if (value != 'OTRO') _otroColorController.clear();
+                          }),
                     ),
                   ),
                 ],
               ),
+              if (_colorController.text == 'OTRO')
+                _buildTextField(
+                  _otroColorController,
+                  'Especifique el color',
+                  Icons.edit,
+                ),
 
               Row(
                 children: [
@@ -552,6 +712,7 @@ class _AseguramientoPageState extends State<AseguramientoPage> {
                 'Observaciones',
                 Icons.comment,
                 isMultiline: true,
+                requiredField: false,
               ),
               _buildTextField(
                 _aseguraController,
@@ -565,30 +726,28 @@ class _AseguramientoPageState extends State<AseguramientoPage> {
               ),
 
               const SizedBox(height: 30),
-              if (!widget.esLectura) // Solo muestra el botón si NO es modo lectura
+              if (!widget
+                  .esLectura) // Solo muestra el botón si NO es modo lectura
                 _isSaving
                     ? const Center(child: CircularProgressIndicator())
                     : ElevatedButton.icon(
-                        onPressed: _guardarEnBaseDeDatos,
-                        icon: const Icon(
-                          Icons.cloud_upload,
+                      onPressed: _guardarEnBaseDeDatos,
+                      icon: const Icon(Icons.cloud_upload, color: Colors.white),
+                      label: const Text(
+                        "GUARDAR REGISTRO",
+                        style: TextStyle(
                           color: Colors.white,
-                        ),
-                        label: const Text(
-                          "GUARDAR REGISTRO",
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: brandBlue,
-                          minimumSize: const Size(double.infinity, 60),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
-                          ),
+                          fontWeight: FontWeight.bold,
                         ),
                       ),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: brandBlue,
+                        minimumSize: const Size(double.infinity, 60),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                    ),
             ],
           ),
         ),
@@ -597,6 +756,78 @@ class _AseguramientoPageState extends State<AseguramientoPage> {
   }
 
   // --- WIDGETS AUXILIARES ---
+
+  Widget _buildDropdown<T>({
+    required String label,
+    required IconData icon,
+    required List<T> values,
+    required T? selectedValue,
+    required String Function(T value) labelForValue,
+    required ValueChanged<T?> onChanged,
+  }) {
+    final options = [...values];
+    if (selectedValue != null && !options.contains(selectedValue)) {
+      options.insert(0, selectedValue);
+    }
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: DropdownButtonFormField<T>(
+        initialValue: selectedValue,
+        isExpanded: true,
+        menuMaxHeight: 280,
+        dropdownColor: Colors.white,
+        style: const TextStyle(
+          color: Color(0xFF263238),
+          fontSize: 14,
+          fontWeight: FontWeight.w500,
+        ),
+        icon: const Icon(Icons.arrow_drop_down_rounded),
+        iconEnabledColor: brandBlue,
+        onChanged: widget.esLectura ? null : onChanged,
+        items:
+            options
+                .map(
+                  (value) => DropdownMenuItem<T>(
+                    value: value,
+                    child: Text(
+                      labelForValue(value),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                )
+                .toList(),
+        decoration: InputDecoration(
+          labelText: label,
+          labelStyle: TextStyle(color: Colors.blueGrey[600]),
+          prefixIcon: Icon(icon, color: brandBlue, size: 20),
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(10),
+            borderSide: BorderSide(color: Colors.blueGrey[200]!),
+          ),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(10),
+            borderSide: BorderSide(color: Colors.blueGrey[200]!),
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(10),
+            borderSide: BorderSide(color: brandBlue, width: 1.5),
+          ),
+          errorBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(10),
+            borderSide: const BorderSide(color: Colors.redAccent),
+          ),
+          filled: true,
+          fillColor: widget.esLectura ? Colors.blueGrey[50] : Colors.white,
+          contentPadding: const EdgeInsets.symmetric(
+            horizontal: 14,
+            vertical: 12,
+          ),
+        ),
+        validator: (value) => value == null ? 'Requerido' : null,
+      ),
+    );
+  }
 
   Widget _buildCumplimientoSelector() {
     return Column(
@@ -607,20 +838,31 @@ class _AseguramientoPageState extends State<AseguramientoPage> {
           absorbing: widget.esLectura,
           child: Row(
             children: [
-              Expanded(child: _optionButton("CUMPLE", _cumplimiento == "CUMPLE", brandGreen, () {
-                setState(() {
-                  _cumplimiento = "CUMPLE";
-                  // si el usuario usa el selector, también actualizamos el campo de texto a 100%
-                  _cumplimientoController.text = '100%';
-                });
-              })),
+              Expanded(
+                child: _optionButton(
+                  "CUMPLE",
+                  _cumplimiento == "CUMPLE",
+                  brandGreen,
+                  () {
+                    setState(() {
+                      _cumplimiento = "CUMPLE";
+                    });
+                  },
+                ),
+              ),
               const SizedBox(width: 10),
-              Expanded(child: _optionButton("NO CUMPLE", _cumplimiento == "NO CUMPLE", Colors.redAccent, () {
-                setState(() {
-                  _cumplimiento = "NO CUMPLE";
-                  _cumplimientoController.text = '0%';
-                });
-              })),
+              Expanded(
+                child: _optionButton(
+                  "NO CUMPLE",
+                  _cumplimiento == "NO CUMPLE",
+                  Colors.redAccent,
+                  () {
+                    setState(() {
+                      _cumplimiento = "NO CUMPLE";
+                    });
+                  },
+                ),
+              ),
             ],
           ),
         ),
@@ -709,6 +951,7 @@ class _AseguramientoPageState extends State<AseguramientoPage> {
     bool isMultiline = false,
     VoidCallback? onTap,
     bool readOnly = false,
+    bool requiredField = true,
   }) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
@@ -731,7 +974,10 @@ class _AseguramientoPageState extends State<AseguramientoPage> {
               vertical: 12,
             ),
           ),
-          validator: (v) => v!.isEmpty ? 'Requerido' : null,
+          validator:
+              requiredField
+                  ? (v) => v!.trim().isEmpty ? 'Requerido' : null
+                  : null,
         ),
       ),
     );

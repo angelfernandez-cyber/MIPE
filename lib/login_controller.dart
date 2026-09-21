@@ -7,6 +7,8 @@ import 'package:local_auth/local_auth.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:local_auth_android/local_auth_android.dart';
+import 'dart:async';
+import 'offline_sync_service.dart';
 
 class LoginController extends GetxController {
   var isLoading = false.obs;
@@ -20,6 +22,7 @@ class LoginController extends GetxController {
 
   final LocalAuthentication _auth = LocalAuthentication();
   final FlutterSecureStorage _secureStorage = const FlutterSecureStorage();
+  Timer? _offlineSyncTimer;
 
   // Ajusta tu URL y apiKey
   final String supabaseUrl = 'https://dakdyrgfwimwytotkzca.supabase.co';
@@ -29,11 +32,23 @@ class LoginController extends GetxController {
   @override
   void onInit() {
     super.onInit();
+    _offlineSyncTimer = Timer.periodic(const Duration(seconds: 10), (_) {
+      OfflineSyncService.syncPending(
+        supabaseUrl: supabaseUrl,
+        apiKey: apiKey,
+      );
+    });
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       await _handleFreshInstallCleanup();
       await cargarUsuarioRecordado();
       verificarSesionExistente();
     });
+  }
+
+  @override
+  void onClose() {
+    _offlineSyncTimer?.cancel();
+    super.onClose();
   }
 
   /// Detecta instalación nueva y limpia credenciales guardadas si corresponde.

@@ -178,30 +178,34 @@ Widget build(BuildContext context) {
 
         // GRID
         Expanded(
-          child: GridView.builder(
-            padding: const EdgeInsets.symmetric(
-              horizontal: 20,
-              vertical: 10,
-            ),
-            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: 3,
-              crossAxisSpacing: 15,
-              mainAxisSpacing: 15,
-              childAspectRatio: 1,
-            ),
-            itemCount: 45,
-            itemBuilder: (context, index) {
-              int numeroBloque = 401 + index;
-              String bloqueStr = numeroBloque.toString();
+          child: LayoutBuilder(
+            builder: (context, _) {
+              return GridView.builder(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 20,
+                  vertical: 10,
+                ),
+                gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+                  maxCrossAxisExtent: 125,
+                  crossAxisSpacing: 12,
+                  mainAxisSpacing: 12,
+                  childAspectRatio: 1.18,
+                ),
+                itemCount: 45,
+                itemBuilder: (context, index) {
+                  int numeroBloque = 401 + index;
+                  String bloqueStr = numeroBloque.toString();
 
-              bool tieneAcceso =
-                  esAdmin || bloquesPermitidos.contains(bloqueStr);
+                  bool tieneAcceso =
+                      esAdmin || bloquesPermitidos.contains(bloqueStr);
 
-              return _buildBloqueConsulta(
-                numeroBloque,
-                brandBlueLight,
-                brandBlue,
-                tieneAcceso,
+                  return _buildBloqueConsulta(
+                    numeroBloque,
+                    brandBlueLight,
+                    brandBlue,
+                    tieneAcceso,
+                  );
+                },
               );
             },
           ),
@@ -249,44 +253,15 @@ Widget build(BuildContext context) {
                 ]
               : [],
         ),
-        child: Stack(
-          children: [
-            Positioned(
-              right: -2,
-              bottom: -2,
-              child: Icon(
-                Icons.manage_search_rounded,
-                size: 35,
-                color: tieneAcceso
-                    ? Colors.white.withOpacity(0.2)
-                    : Colors.black26,
-              ),
+        child: Center(
+          child: Text(
+            '$numero',
+            style: TextStyle(
+              color: tieneAcceso ? Colors.white : Colors.black45,
+              fontSize: 25,
+              fontWeight: FontWeight.w900,
             ),
-            Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  const Text(
-                    "BLOQUE",
-                    style: TextStyle(
-                      color: Colors.white70,
-                      fontSize: 10,
-                      fontWeight: FontWeight.bold,
-                      letterSpacing: 1.0,
-                    ),
-                  ),
-                  Text(
-                    '$numero',
-                    style: TextStyle(
-                      color: tieneAcceso ? Colors.white : Colors.black45,
-                      fontSize: 28,
-                      fontWeight: FontWeight.w900,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
+          ),
         ),
       ),
     );

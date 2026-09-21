@@ -1,9 +1,12 @@
 // lib/formulario_page.dart
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:get/get.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'dart:async';
 import 'login_controller.dart';
+import 'offline_sync_service.dart';
 
 class FormularioPage extends StatefulWidget {
   const FormularioPage({super.key});
@@ -49,16 +52,46 @@ class _FormularioPageState extends State<FormularioPage> {
   // Equipos desde Supabase
   List<Map<String, dynamic>> _equiposDisponibles = [];
 
-  // Días fijos Lunes a Sábado (selección única)
+  // Catálogos del registro MIPE desde Supabase
+  List<String> _personasDisponibles = [];
+  List<String> _semanasDisponibles = [];
+  List<String> _productosDisponibles = [];
+  List<String> _tiposDisponibles = [];
+  List<String> _direccionesDisponibles = [];
+  List<String> _gruposDisponibles = [];
+
+  // Días laborables disponibles para el registro MIPE.
   final List<String> _diasDisponibles = [
     'Lunes',
     'Martes',
     'Miércoles',
     'Jueves',
     'Viernes',
-    'Sábado',
   ];
   String? _diaSeleccionado; // ahora solo un día
+
+  String? _diaActual() {
+    const nombres = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes'];
+    final weekday = DateTime.now().weekday;
+    return weekday >= DateTime.monday && weekday <= DateTime.friday
+        ? nombres[weekday - 1]
+        : null;
+  }
+
+  int _semanaActual() {
+    final hoy = DateTime.now();
+    final juevesActual = hoy.add(
+      Duration(days: DateTime.thursday - hoy.weekday),
+    );
+    final cuatroDeEnero = DateTime(juevesActual.year, 1, 4);
+    final primerJueves = cuatroDeEnero.add(
+      Duration(days: DateTime.thursday - cuatroDeEnero.weekday),
+    );
+    final semana =
+        1 + juevesActual.difference(primerJueves).inDays ~/ 7;
+
+    return semana > 52 ? 52 : semana;
+  }
 
   void _selectDia(String dia) {
     if (esModoLectura) return;
@@ -129,6 +162,12 @@ class _FormularioPageState extends State<FormularioPage> {
   @override
   void initState() {
     super.initState();
+    final args = Get.arguments;
+    final esRegistroExistente =
+        args is Map && (args.containsKey('id') || args.containsKey('producto'));
+    if (!esRegistroExistente) {
+      _semanaController.text = _semanaActual().toString();
+    }
     _inicializarFormulario();
   }
 
@@ -138,7 +177,14 @@ class _FormularioPageState extends State<FormularioPage> {
 
     // Cargar equipos
     await _cargarEquiposDisponibles();
-    
+
+    // Cargar catálogos del nuevo registro MIPE
+    await _cargarCatalogosMipe();
+
+    if (Get.arguments == null) {
+      _diaSeleccionado = _diaActual();
+    }
+
     // Luego cargar los datos del formulario si vienen en argumentos
     if (Get.arguments != null) {
       if (Get.arguments is Map) {
@@ -155,6 +201,14 @@ class _FormularioPageState extends State<FormularioPage> {
         esModoLectura = false;
       }
     }
+
+    if (!esModoLectura && _diaSeleccionado == null) {
+      _diaSeleccionado = _diaActual();
+    }
+
+    if (!esModoLectura && _semanaController.text.trim().isEmpty) {
+      _semanaController.text = _semanaActual().toString();
+    }
   }
 
   Future<void> _cargarBlancosDisponibles() async {
@@ -167,9 +221,12 @@ class _FormularioPageState extends State<FormularioPage> {
         'Authorization': 'Bearer ${loginController.apiKey}',
         'Accept': 'application/json',
       };
-      final response = await http.get(url, headers: headers);
-      if (response.statusCode == 200) {
-        final List<dynamic> data = jsonDecode(response.body);
+      final data = await OfflineSyncService.fetchListWithCache(
+        cacheKey: 'cache_catalogo_blancos_biologicos',
+        url: url,
+        headers: headers,
+      );
+      if (data.isNotEmpty) {
         setState(() {
           _blancosDisponibles = List<Map<String, dynamic>>.from(data);
         });
@@ -178,7 +235,7 @@ class _FormularioPageState extends State<FormularioPage> {
           print('   - ID: ${blanco['id']}, Nombre: ${blanco['nombre']}');
         }
       } else {
-        print('❌ Error cargando blancos: ${response.statusCode}');
+        print('⚠️ No hay blancos biológicos disponibles en caché ni en Supabase');
       }
     } catch (e) {
       print('❌ Error al cargar blancos biológicos: $e');
@@ -195,9 +252,12 @@ class _FormularioPageState extends State<FormularioPage> {
         'Authorization': 'Bearer ${loginController.apiKey}',
         'Accept': 'application/json',
       };
-      final response = await http.get(url, headers: headers);
-      if (response.statusCode == 200) {
-        final List<dynamic> data = jsonDecode(response.body);
+      final data = await OfflineSyncService.fetchListWithCache(
+        cacheKey: 'cache_catalogo_equipos',
+        url: url,
+        headers: headers,
+      );
+      if (data.isNotEmpty) {
         setState(() {
           _equiposDisponibles = List<Map<String, dynamic>>.from(data);
         });
@@ -206,11 +266,165 @@ class _FormularioPageState extends State<FormularioPage> {
           print('   - ID: ${equipo['id']}, Nombre: ${equipo['nombre']}');
         }
       } else {
-        print('❌ Error cargando equipos: ${response.statusCode}');
+        print('⚠️ No hay equipos disponibles en caché ni en Supabase');
       }
     } catch (e) {
       print('❌ Error al cargar equipos: $e');
     }
+  }
+
+  Future<void> _cargarCatalogosMipe() async {
+    try {
+      final headers = {
+        'apikey': loginController.apiKey,
+        'Authorization': 'Bearer ${loginController.apiKey}',
+        'Accept': 'application/json',
+      };
+
+      Future<List<dynamic>> fetchCatalogo(
+        String table, {
+        bool filtrarActivo = true,
+        String campo = 'nombre',
+      }) async {
+        final filtro = filtrarActivo ? '&activo=eq.true' : '';
+        final url = Uri.parse(
+          '${loginController.supabaseUrl}/rest/v1/$table?select=$campo$filtro&order=$campo.asc',
+        );
+        return OfflineSyncService.fetchListWithCache(
+          cacheKey: 'cache_catalogo_$table',
+          url: url,
+          headers: headers,
+        );
+      }
+
+      final semanas = await OfflineSyncService.fetchListWithCache(
+        cacheKey: 'cache_catalogo_aseguramiento_semanas',
+        url: Uri.parse(
+          '${loginController.supabaseUrl}/rest/v1/aseguramiento_semanas?select=numero&activo=eq.true&order=numero.asc',
+        ),
+        headers: headers,
+      );
+
+      final resultados = await Future.wait([
+        fetchCatalogo('persona', filtrarActivo: false, campo: 'nombres'),
+        fetchCatalogo('aseguramiento_productos'),
+        fetchCatalogo('mipe_tipos'),
+        fetchCatalogo('mipe_direcciones'),
+        fetchCatalogo('mipe_grupos'),
+      ]);
+
+      if (!mounted) return;
+      setState(() {
+        _personasDisponibles = _nombresCatalogo(
+          resultados[0],
+          campo: 'nombres',
+        );
+        _semanasDisponibles =
+            semanas
+                .map((item) => item['numero'].toString())
+                .toList();
+        _productosDisponibles = _nombresCatalogo(resultados[1]);
+        _tiposDisponibles = _nombresCatalogo(resultados[2]);
+        _direccionesDisponibles = _nombresCatalogo(resultados[3]);
+        _gruposDisponibles = _nombresCatalogo(resultados[4]);
+      });
+    } catch (e) {
+      if (!mounted) return;
+      Get.snackbar(
+        'Catálogos MIPE no disponibles',
+        'Verifique las tablas de catálogos en Supabase: $e',
+        snackPosition: SnackPosition.BOTTOM,
+        duration: const Duration(seconds: 8),
+      );
+    }
+  }
+
+  List<String> _nombresCatalogo(
+    List<dynamic> items, {
+    String campo = 'nombre',
+  }) {
+    return items
+        .map((item) => item[campo]?.toString().trim() ?? '')
+        .where((nombre) => nombre.isNotEmpty)
+        .toList();
+  }
+
+  Widget _buildCatalogoDropdown(
+    TextEditingController controller,
+    String label,
+    IconData icon,
+    List<String> values,
+  ) {
+    if (esModoLectura) {
+      return _buildInput(controller, label, icon, TextInputType.text);
+    }
+
+    final currentValue = controller.text.trim();
+    final options = [...values];
+    if (currentValue.isNotEmpty && !options.contains(currentValue)) {
+      options.insert(0, currentValue);
+    }
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: DropdownButtonFormField<String>(
+        value: currentValue.isEmpty ? null : currentValue,
+        isExpanded: true,
+        menuMaxHeight: 280,
+        dropdownColor: Colors.white,
+        style: const TextStyle(
+          color: Color(0xFF263238),
+          fontSize: 14,
+          fontWeight: FontWeight.w500,
+        ),
+        icon: const Icon(Icons.arrow_drop_down_rounded),
+        iconEnabledColor: brandBlue,
+        decoration: InputDecoration(
+          labelText: label,
+          labelStyle: TextStyle(color: Colors.blueGrey[600]),
+          filled: true,
+          fillColor: Colors.white,
+          prefixIcon: Icon(icon, size: 20, color: brandBlue),
+          contentPadding: const EdgeInsets.symmetric(
+            horizontal: 14,
+            vertical: 12,
+          ),
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(10),
+            borderSide: BorderSide(color: Colors.blueGrey[200]!),
+          ),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(10),
+            borderSide: BorderSide(color: Colors.blueGrey[200]!),
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(10),
+            borderSide: BorderSide(color: brandBlue, width: 1.5),
+          ),
+          errorBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(10),
+            borderSide: const BorderSide(color: Colors.redAccent),
+          ),
+        ),
+        hint: Text(
+          values.isEmpty ? 'Cargando opciones...' : 'Selecciona una opción',
+          style: TextStyle(fontSize: 14, color: Colors.grey[600]),
+        ),
+        items:
+            options
+                .map(
+                  (value) => DropdownMenuItem<String>(
+                    value: value,
+                    child: Text(value, overflow: TextOverflow.ellipsis),
+                  ),
+                )
+                .toList(),
+        onChanged: (value) => setState(() => controller.text = value ?? ''),
+        validator:
+            (value) =>
+                (value == null || value.isEmpty) ? 'Campo obligatorio' : null,
+      ),
+    );
   }
 
   /// Llena los campos cuando se abre en modo lectura (detalle)
@@ -296,35 +510,39 @@ class _FormularioPageState extends State<FormularioPage> {
       try {
         // Parsear productos (siempre como string concatenado)
         final productosRaw = data['producto'] as String;
-        final productosList = productosRaw
-            .split(',')
-            .map((s) => s.trim())
-            .where((s) => s.isNotEmpty)
-            .toList();
+        final productosList =
+            productosRaw
+                .split(',')
+                .map((s) => s.trim())
+                .where((s) => s.isNotEmpty)
+                .toList();
 
         // Parsear dosis (puede ser null o string concatenado)
-        final dosisList = data['dosis'] != null
-            ? (data['dosis'] as String)
-                .split(',')
-                .map((s) => s.trim())
-                .toList()
-            : [];
+        final dosisList =
+            data['dosis'] != null
+                ? (data['dosis'] as String)
+                    .split(',')
+                    .map((s) => s.trim())
+                    .toList()
+                : [];
 
         // Parsear cat_toxic (puede ser null o string concatenado)
-        final catList = data['cat_toxic'] != null
-            ? (data['cat_toxic'] as String)
-                .split(',')
-                .map((s) => s.trim())
-                .toList()
-            : [];
+        final catList =
+            data['cat_toxic'] != null
+                ? (data['cat_toxic'] as String)
+                    .split(',')
+                    .map((s) => s.trim())
+                    .toList()
+                : [];
 
         // Parsear blanco_biologico (puede ser null o string concatenado)
-        final blancosList = data['blanco_biologico'] != null
-            ? (data['blanco_biologico'] as String)
-                .split(',')
-                .map((s) => s.trim())
-                .toList()
-            : [];
+        final blancosList =
+            data['blanco_biologico'] != null
+                ? (data['blanco_biologico'] as String)
+                    .split(',')
+                    .map((s) => s.trim())
+                    .toList()
+                : [];
 
         print('📦 Cargando productos:');
         print('   Productos: $productosList');
@@ -343,11 +561,14 @@ class _FormularioPageState extends State<FormularioPage> {
           int? blancoId;
           if (blancoNombre.isNotEmpty) {
             final blancoNombreLower = blancoNombre.toLowerCase().trim();
-            print('   Buscando blanco "$blancoNombre" (lower: "$blancoNombreLower")');
-            
+            print(
+              '   Buscando blanco "$blancoNombre" (lower: "$blancoNombreLower")',
+            );
+
             final blanco = _blancosDisponibles.firstWhere(
               (b) {
-                final bdNameLower = (b['nombre']?.toString() ?? '').toLowerCase().trim();
+                final bdNameLower =
+                    (b['nombre']?.toString() ?? '').toLowerCase().trim();
                 final match = bdNameLower == blancoNombreLower;
                 if (match) {
                   print('     ✓ Encontrado: ${b['nombre']} (ID: ${b['id']})');
@@ -391,7 +612,7 @@ class _FormularioPageState extends State<FormularioPage> {
     _numCamasController.clear();
     _equipoController.clear();
     _ireController.clear();
-    _semanaController.clear();
+    _semanaController.text = _semanaActual().toString();
     _facilitadorMipeController.clear();
     _facilitadorBloqueController.clear();
 
@@ -407,146 +628,216 @@ class _FormularioPageState extends State<FormularioPage> {
     }
     productos.clear();
 
-    _diaSeleccionado = null;
+    _diaSeleccionado = _diaActual();
 
     setState(() {});
   }
 
   Future<void> _guardarEnSupabase() async {
-  if (!_formKey.currentState!.validate()) return;
+    if (!_formKey.currentState!.validate()) return;
 
-  // Validación adicional: al menos un nombre de producto no vacío
-  final nombresNoVacios = productos
-      .map((p) => p['producto']?.text.trim() ?? '')
-      .where((s) => s.isNotEmpty)
-      .toList();
-  if (nombresNoVacios.isEmpty) {
-    Get.snackbar('Error', 'Debe agregar al menos un nombre de producto',
-        backgroundColor: Colors.red, colorText: Colors.white);
-    return;
-  }
-
-  setState(() => _isSaving = true);
-
-  try {
-    // --- Mantener comportamiento anterior para producto/dosis/cat ---
-    final productosNombres = productos
-        .map((p) => p['producto']?.text.trim() ?? '')
-        .where((s) => s.isNotEmpty)
-        .toList();
-    final productosDosis = productos
-        .map((p) => p['dosis']?.text.trim() ?? '')
-        .where((s) => s.isNotEmpty)
-        .toList();
-    final productosCat = productos
-        .map((p) => p['cat_toxic']?.text.trim() ?? '')
-        .where((s) => s.isNotEmpty)
-        .toList();
-
-    final productoConcatenado = productosNombres.join(', ');
-    final dosisConcatenada = productosDosis.join(', ');
-    final catConcatenada = productosCat.join(', ');
-
-    // --- Nuevo: concatenar blancos por producto ---
-    final productosBlancos = productos
-        .map((p) {
-          final blancoId = p['blanco_id'] as int?;
-          if (blancoId == null) return '';
-          final blanco = _blancosDisponibles.firstWhere(
-            (b) => b['id'] == blancoId,
-            orElse: () => {},
-          );
-          return blanco['nombre']?.toString() ?? '';
-        })
-        .where((s) => s.isNotEmpty)
-        .toList();
-    final blancosConcatenados = productosBlancos.join(', ');
-
-    final gruposConcatenados = gruposFumigadores
-        .map((g) => g.text.trim())
-        .where((s) => s.isNotEmpty)
-        .join(', ');
-
-    final diasConcatenados = _diaSeleccionado ?? '';
-
-    String? productoToSend = productoConcatenado.isNotEmpty ? productoConcatenado : null;
-    String? dosisToSend = dosisConcatenada.isNotEmpty ? dosisConcatenada : null;
-    String? catToSend = catConcatenada.isNotEmpty ? catConcatenada : null;
-    String? gruposToSend = gruposConcatenados.isNotEmpty ? gruposConcatenados : null;
-    String? diasToSend = diasConcatenados.isNotEmpty ? diasConcatenados : null;
-    String? blancosToSend = blancosConcatenados.isNotEmpty ? blancosConcatenados : null;
-
-    final int? semanaParsed = int.tryParse(_semanaController.text.trim());
-
-    final Map<String, dynamic> payload = {
-      'bloque': int.tryParse(_bloqueController.text.trim()) ?? _bloqueController.text.trim(),
-      'jefe_mipe': _jefeMipeController.text.trim().isNotEmpty ? _jefeMipeController.text.trim() : null,
-      'bombero': _bomberoController.text.trim().isNotEmpty ? _bomberoController.text.trim() : null,
-      'temperatura': _tempController.text.trim().isNotEmpty ? _tempController.text.trim() : null,
-      'humedad_relativa': _humedadController.text.trim().isNotEmpty ? _humedadController.text.trim() : null,
-      'tipo_aplicacion': _tipoController.text.trim().isNotEmpty ? _tipoController.text.trim() : null,
-      'producto': productoToSend,
-      'dosis': dosisToSend,
-      'cat_toxic': catToSend,
-      'grupo_fumigadores': gruposToSend,
-      'dias': diasToSend,
-      'volumen_cama': _volumenCamaController.text.trim().isNotEmpty ? _volumenCamaController.text.trim() : null,
-      'direccion': _direccionController.text.trim().isNotEmpty ? _direccionController.text.trim() : null,
-      'num_camas': _numCamasController.text.trim().isNotEmpty ? _numCamasController.text.trim() : null,
-      'equipo': _equipoController.text.trim().isNotEmpty ? _equipoController.text.trim() : null,
-      'ire_horas': _ireController.text.trim().isNotEmpty ? _ireController.text.trim() : null,
-      'semana': semanaParsed,
-      'facilitador_mipe': _facilitadorMipeController.text.trim().isNotEmpty ? _facilitadorMipeController.text.trim() : null,
-      'facilitador_bloque': _facilitadorBloqueController.text.trim().isNotEmpty ? _facilitadorBloqueController.text.trim() : null,
-      'usuario_registro': loginController.loggedInUser.value?['nombres'] ?? 'Operario',
-      // **Solo añadimos blancos aquí** (sin tocar el resto)
-      'blanco_biologico': blancosToSend,
-    };
-
-    // Eliminar claves con valor null
-    payload.removeWhere((key, value) => value == null);
-
-    // Debug: imprime payload y headers
-    print('--- PAYLOAD PREVIO A ENVÍO ---');
-    print(jsonEncode(payload));
-
-    final headers = {
-      'apikey': loginController.apiKey,
-      'Authorization': 'Bearer ${loginController.apiKey}',
-      'Content-Type': 'application/json',
-      'Accept': 'application/json',
-      'Prefer': 'return=representation',
-    };
-
-    print('--- HEADERS ---');
-    print(headers);
-
-    final url = Uri.parse('${loginController.supabaseUrl}/rest/v1/aspersiones');
-    final response = await http.post(
-      url,
-      headers: headers,
-      body: jsonEncode(payload),
-    );
-
-    print('SUPABASE URL: ${loginController.supabaseUrl}');
-    print('STATUS: ${response.statusCode}');
-    print('BODY: ${response.body}');
-
-    if (response.statusCode == 201 || response.statusCode == 200) {
-      _limpiarCampos();
-      Get.snackbar('Éxito', 'Registro guardado correctamente',
-          backgroundColor: brandGreen, colorText: Colors.white, snackPosition: SnackPosition.BOTTOM);
-    } else {
-      print('Error al guardar: ${response.statusCode} - ${response.body}');
-      Get.snackbar('Error', 'No se pudo guardar: ${response.statusCode}');
+    // Validación adicional: al menos un nombre de producto no vacío
+    final nombresNoVacios =
+        productos
+            .map((p) => p['producto']?.text.trim() ?? '')
+            .where((s) => s.isNotEmpty)
+            .toList();
+    if (nombresNoVacios.isEmpty) {
+      Get.snackbar(
+        'Error',
+        'Debe agregar al menos un nombre de producto',
+        backgroundColor: Colors.red,
+        colorText: Colors.white,
+      );
+      return;
     }
-  } catch (e, st) {
-    print('Excepción guardando: $e\n$st');
-    Get.snackbar('Error Crítico', 'Verifica tu conexión');
-  } finally {
-    setState(() => _isSaving = false);
+
+    setState(() => _isSaving = true);
+    Map<String, dynamic> payload = {};
+
+    try {
+      // --- Mantener comportamiento anterior para producto/dosis/cat ---
+      final productosNombres =
+          productos
+              .map((p) => p['producto']?.text.trim() ?? '')
+              .where((s) => s.isNotEmpty)
+              .toList();
+      final productosDosis =
+          productos
+              .map((p) => p['dosis']?.text.trim() ?? '')
+              .where((s) => s.isNotEmpty)
+              .toList();
+      final productosCat =
+          productos
+              .map((p) => p['cat_toxic']?.text.trim() ?? '')
+              .where((s) => s.isNotEmpty)
+              .toList();
+
+      final productoConcatenado = productosNombres.join(', ');
+      final dosisConcatenada = productosDosis.join(', ');
+      final catConcatenada = productosCat.join(', ');
+
+      // --- Nuevo: concatenar blancos por producto ---
+      final productosBlancos =
+          productos
+              .map((p) {
+                final blancoId = p['blanco_id'] as int?;
+                if (blancoId == null) return '';
+                final blanco = _blancosDisponibles.firstWhere(
+                  (b) => b['id'] == blancoId,
+                  orElse: () => {},
+                );
+                return blanco['nombre']?.toString() ?? '';
+              })
+              .where((s) => s.isNotEmpty)
+              .toList();
+      final blancosConcatenados = productosBlancos.join(', ');
+
+      final gruposConcatenados = gruposFumigadores
+          .map((g) => g.text.trim())
+          .where((s) => s.isNotEmpty)
+          .join(', ');
+
+      final diasConcatenados = _diaSeleccionado ?? '';
+
+      String? productoToSend =
+          productoConcatenado.isNotEmpty ? productoConcatenado : null;
+      String? dosisToSend =
+          dosisConcatenada.isNotEmpty ? dosisConcatenada : null;
+      String? catToSend = catConcatenada.isNotEmpty ? catConcatenada : null;
+      String? gruposToSend =
+          gruposConcatenados.isNotEmpty ? gruposConcatenados : null;
+      String? diasToSend =
+          diasConcatenados.isNotEmpty ? diasConcatenados : null;
+      String? blancosToSend =
+          blancosConcatenados.isNotEmpty ? blancosConcatenados : null;
+
+      final int? semanaParsed = int.tryParse(_semanaController.text.trim());
+
+      payload = {
+        'bloque':
+            int.tryParse(_bloqueController.text.trim()) ??
+            _bloqueController.text.trim(),
+        'jefe_mipe':
+            _jefeMipeController.text.trim().isNotEmpty
+                ? _jefeMipeController.text.trim()
+                : null,
+        'bombero':
+            _bomberoController.text.trim().isNotEmpty
+                ? _bomberoController.text.trim()
+                : null,
+        'temperatura':
+            _tempController.text.trim().isNotEmpty
+                ? _tempController.text.trim()
+                : null,
+        'humedad_relativa':
+            _humedadController.text.trim().isNotEmpty
+                ? _humedadController.text.trim()
+                : null,
+        'tipo_aplicacion':
+            _tipoController.text.trim().isNotEmpty
+                ? _tipoController.text.trim()
+                : null,
+        'producto': productoToSend,
+        'dosis': dosisToSend,
+        'cat_toxic': catToSend,
+        'grupo_fumigadores': gruposToSend,
+        'dias': diasToSend,
+        'volumen_cama':
+            _volumenCamaController.text.trim().isNotEmpty
+                ? _volumenCamaController.text.trim()
+                : null,
+        'direccion':
+            _direccionController.text.trim().isNotEmpty
+                ? _direccionController.text.trim()
+                : null,
+        'num_camas':
+            _numCamasController.text.trim().isNotEmpty
+                ? _numCamasController.text.trim()
+                : null,
+        'equipo':
+            _equipoController.text.trim().isNotEmpty
+                ? _equipoController.text.trim()
+                : null,
+        'ire_horas':
+            _ireController.text.trim().isNotEmpty
+                ? _ireController.text.trim()
+                : null,
+        'semana': semanaParsed,
+        'facilitador_mipe':
+            _facilitadorMipeController.text.trim().isNotEmpty
+                ? _facilitadorMipeController.text.trim()
+                : null,
+        'facilitador_bloque':
+            _facilitadorBloqueController.text.trim().isNotEmpty
+                ? _facilitadorBloqueController.text.trim()
+                : null,
+        'usuario_registro':
+            loginController.loggedInUser.value?['nombres'] ?? 'Operario',
+        // **Solo añadimos blancos aquí** (sin tocar el resto)
+        'blanco_biologico': blancosToSend,
+      };
+
+      // Eliminar claves con valor null
+      payload.removeWhere((key, value) => value == null);
+
+      // Debug: imprime payload y headers
+      print('--- PAYLOAD PREVIO A ENVÍO ---');
+      print(jsonEncode(payload));
+
+      final headers = {
+        'apikey': loginController.apiKey,
+        'Authorization': 'Bearer ${loginController.apiKey}',
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+        'Prefer': 'return=representation',
+      };
+
+      print('--- HEADERS ---');
+      print(headers);
+
+      final url = Uri.parse(
+        '${loginController.supabaseUrl}/rest/v1/aspersiones',
+      );
+      final response = await http.post(
+        url,
+        headers: headers,
+        body: jsonEncode(payload),
+      ).timeout(const Duration(seconds: 8));
+
+      print('SUPABASE URL: ${loginController.supabaseUrl}');
+      print('STATUS: ${response.statusCode}');
+      print('BODY: ${response.body}');
+
+      if (response.statusCode == 201 || response.statusCode == 200) {
+        _limpiarCampos();
+        Get.snackbar(
+          'Éxito',
+          'Registro guardado correctamente',
+          backgroundColor: brandGreen,
+          colorText: Colors.white,
+          snackPosition: SnackPosition.BOTTOM,
+        );
+      } else {
+        print('Error al guardar: ${response.statusCode} - ${response.body}');
+        Get.snackbar('Error', 'No se pudo guardar: ${response.statusCode}');
+      }
+    } on TimeoutException {
+      await OfflineSyncService.enqueue('aspersiones', payload);
+      _limpiarCampos();
+      Get.snackbar('Guardado sin internet', 'Se sincronizará automáticamente al recuperar conexión');
+    } on http.ClientException {
+      await OfflineSyncService.enqueue('aspersiones', payload);
+      _limpiarCampos();
+      Get.snackbar('Guardado sin internet', 'Se sincronizará automáticamente al recuperar conexión');
+    } catch (e, st) {
+      print('Excepción guardando: $e\n$st');
+      Get.snackbar('Error Crítico', 'Verifica tu conexión');
+    } finally {
+      setState(() => _isSaving = false);
+    }
   }
-}
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -592,26 +883,26 @@ class _FormularioPageState extends State<FormularioPage> {
                           ),
                           const SizedBox(width: 10),
                           Expanded(
-                            child: _buildInput(
+                            child: _buildCatalogoDropdown(
                               _bomberoController,
                               'Bombero',
                               Icons.person,
-                              TextInputType.text,
+                              _personasDisponibles,
                             ),
                           ),
                         ],
                       ),
-                      _buildInput(
+                      _buildCatalogoDropdown(
                         _jefeMipeController,
                         'Jefe MIPE',
                         Icons.assignment_ind,
-                        TextInputType.text,
+                        _personasDisponibles,
                       ),
-                      _buildInput(
+                      _buildCatalogoDropdown(
                         _semanaController,
                         'Semana',
                         Icons.calendar_month,
-                        TextInputType.number,
+                        _semanasDisponibles,
                       ),
                     ]),
                     _buildSectionTitle("DÍA (selección única)"),
@@ -645,20 +936,20 @@ class _FormularioPageState extends State<FormularioPage> {
                       Row(
                         children: [
                           Expanded(
-                            child: _buildInput(
+                            child: _buildCatalogoDropdown(
                               _tipoController,
                               'Tipo',
                               Icons.category,
-                              TextInputType.text,
+                              _tiposDisponibles,
                             ),
                           ),
                           const SizedBox(width: 10),
                           Expanded(
-                            child: _buildInput(
+                            child: _buildCatalogoDropdown(
                               _direccionController,
                               'Dirección',
                               Icons.navigation,
-                              TextInputType.text,
+                              _direccionesDisponibles,
                             ),
                           ),
                         ],
@@ -715,11 +1006,11 @@ class _FormularioPageState extends State<FormularioPage> {
                         return Row(
                           children: [
                             Expanded(
-                              child: _buildInput(
+                              child: _buildCatalogoDropdown(
                                 gruposFumigadores[index],
                                 'Grupo ${index + 1}',
                                 Icons.groups,
-                                TextInputType.text,
+                                _gruposDisponibles,
                               ),
                             ),
                             if (!esModoLectura)
@@ -769,17 +1060,17 @@ class _FormularioPageState extends State<FormularioPage> {
                     ]),
                     _buildSectionTitle("FACILITADORES"),
                     _buildCard([
-                      _buildInput(
+                      _buildCatalogoDropdown(
                         _facilitadorMipeController,
                         'Facilitador MIPE',
                         Icons.person_4,
-                        TextInputType.text,
+                        _personasDisponibles,
                       ),
-                      _buildInput(
+                      _buildCatalogoDropdown(
                         _facilitadorBloqueController,
                         'Facilitador Bloque',
                         Icons.person_3,
-                        TextInputType.text,
+                        _personasDisponibles,
                       ),
                     ]),
                     const SizedBox(height: 30),
@@ -804,29 +1095,36 @@ class _FormularioPageState extends State<FormularioPage> {
           style: TextStyle(fontWeight: FontWeight.w600),
         ),
         const SizedBox(height: 8),
-        Wrap(
-          spacing: 8,
-          runSpacing: 6,
-          children:
-              _diasDisponibles.map((dia) {
-                final selected = _diaSeleccionado == dia;
-                return ChoiceChip(
-                  label: Text(dia),
-                  selected: selected,
-                  onSelected: (_) => _selectDia(dia),
-                  selectedColor: brandBlue,
-                  backgroundColor: Colors.grey[200],
-                  labelStyle: TextStyle(
-                    color: selected ? Colors.white : Colors.black,
-                  ),
-                );
-              }).toList(),
+        AbsorbPointer(
+          child: Wrap(
+            spacing: 8,
+            runSpacing: 6,
+            children:
+                _diasDisponibles.map((dia) {
+                  final selected = _diaSeleccionado == dia;
+                  return ChoiceChip(
+                    label: Text(dia),
+                    selected: selected,
+                    onSelected: (_) => _selectDia(dia),
+                    selectedColor: brandBlue,
+                    backgroundColor: Colors.grey[200],
+                    labelStyle: TextStyle(
+                      color: selected ? Colors.white : Colors.black,
+                    ),
+                  );
+                }).toList(),
+          ),
         ),
         const SizedBox(height: 8),
         if (_diaSeleccionado != null)
           Text(
             'Día seleccionado: $_diaSeleccionado',
             style: const TextStyle(color: Colors.black54),
+          )
+        else
+          const Text(
+            'El día se selecciona automáticamente según la fecha actual.',
+            style: TextStyle(color: Colors.black54),
           ),
       ],
     );
@@ -938,10 +1236,11 @@ class _FormularioPageState extends State<FormularioPage> {
             ],
           ),
           const SizedBox(height: 10),
-          _buildProductInput(
+          _buildCatalogoDropdown(
             productos[index]['producto']!,
             'Nombre del Producto',
             Icons.science,
+            _productosDisponibles,
           ),
           Row(
             children: [
@@ -950,6 +1249,7 @@ class _FormularioPageState extends State<FormularioPage> {
                   productos[index]['dosis']!,
                   'Dosis',
                   Icons.straighten,
+                  isDecimal: true,
                 ),
               ),
               const SizedBox(width: 10),
@@ -958,6 +1258,7 @@ class _FormularioPageState extends State<FormularioPage> {
                   productos[index]['cat_toxic']!,
                   'Cat. Toxico',
                   Icons.warning_amber_rounded,
+                  isDecimal: false,
                 ),
               ),
             ],
@@ -973,7 +1274,7 @@ class _FormularioPageState extends State<FormularioPage> {
   Widget _buildBlancoBiologicoDropdown(int productIndex) {
     final blancoId = productos[productIndex]['blanco_id'] as int?;
     String blancoNombre = 'No seleccionado';
-    
+
     if (blancoId != null && _blancosDisponibles.isNotEmpty) {
       final blanco = _blancosDisponibles.firstWhere(
         (b) => b['id'] == blancoId,
@@ -1026,41 +1327,54 @@ class _FormularioPageState extends State<FormularioPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
-            'Blanco Biológico',
-            style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500),
-          ),
-          const SizedBox(height: 6),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(color: Colors.grey[300]!, width: 1),
-              color: Colors.white,
+          DropdownButtonFormField<int>(
+            value: productos[productIndex]['blanco_id'] as int?,
+            isExpanded: true,
+            menuMaxHeight: 280,
+            dropdownColor: Colors.white,
+            style: const TextStyle(
+              color: Color(0xFF263238),
+              fontSize: 14,
+              fontWeight: FontWeight.w500,
             ),
-            child: DropdownButton<int>(
-              isExpanded: true,
-              underline: const SizedBox(),
-              value: productos[productIndex]['blanco_id'] as int?,
-              hint: Text(
-                'Selecciona un blanco',
-                style: TextStyle(
-                  fontSize: 13,
-                  color: Colors.grey[600],
-                ),
+            icon: const Icon(Icons.arrow_drop_down_rounded),
+            iconEnabledColor: brandBlue,
+            decoration: InputDecoration(
+              labelText: 'Blanco Biológico',
+              labelStyle: TextStyle(color: Colors.blueGrey[600]),
+              prefixIcon: const Icon(Icons.bug_report, size: 20),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: BorderSide(color: Colors.blueGrey[200]!),
               ),
-              items: _blancosDisponibles.map<DropdownMenuItem<int>>((blanco) {
-                return DropdownMenuItem<int>(
-                  value: blanco['id'] as int,
-                  child: Text(blanco['nombre'] ?? 'Sin nombre'),
-                );
-              }).toList(),
-              onChanged: (int? newValue) {
-                setState(() {
-                  productos[productIndex]['blanco_id'] = newValue;
-                });
-              },
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: BorderSide(color: Colors.blueGrey[200]!),
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: BorderSide(color: brandBlue, width: 1.5),
+              ),
+              filled: true,
+              fillColor: Colors.white,
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: 14,
+                vertical: 12,
+              ),
             ),
+            hint: const Text('Seleccionar'),
+            items:
+                _blancosDisponibles.map<DropdownMenuItem<int>>((blanco) {
+                  return DropdownMenuItem<int>(
+                    value: blanco['id'] as int,
+                    child: Text(blanco['nombre'] ?? 'Sin nombre'),
+                  );
+                }).toList(),
+            onChanged: (int? newValue) {
+              setState(() {
+                productos[productIndex]['blanco_id'] = newValue;
+              });
+            },
           ),
         ],
       ),
@@ -1070,12 +1384,19 @@ class _FormularioPageState extends State<FormularioPage> {
   Widget _buildProductInput(
     TextEditingController controller,
     String label,
-    IconData icon,
-  ) {
+    IconData icon, {
+    required bool isDecimal,
+  }) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
       child: TextFormField(
         controller: controller,
+        keyboardType: TextInputType.numberWithOptions(decimal: isDecimal),
+        inputFormatters: [
+          FilteringTextInputFormatter.allow(
+            isDecimal ? RegExp(r'\d*\.?\d*') : RegExp(r'\d+'),
+          ),
+        ],
         readOnly: esModoLectura,
         style: TextStyle(
           fontWeight: esModoLectura ? FontWeight.bold : FontWeight.normal,
@@ -1183,23 +1504,40 @@ class _FormularioPageState extends State<FormularioPage> {
       child: DropdownButtonFormField<String>(
         value: valorDropdown,
         isExpanded: true,
+        menuMaxHeight: 280,
+        dropdownColor: Colors.white,
+        style: const TextStyle(
+          color: Color(0xFF263238),
+          fontSize: 14,
+          fontWeight: FontWeight.w500,
+        ),
+        icon: const Icon(Icons.arrow_drop_down_rounded),
+        iconEnabledColor: brandBlue,
         decoration: InputDecoration(
           labelText: 'EQUIPO',
-          labelStyle: const TextStyle(fontSize: 13),
+          labelStyle: TextStyle(color: Colors.blueGrey[600]),
           filled: true,
           fillColor: Colors.white,
           prefixIcon: Icon(Icons.handyman, size: 20, color: brandBlue),
           contentPadding: const EdgeInsets.symmetric(
-            horizontal: 15,
-            vertical: 15,
+            horizontal: 14,
+            vertical: 12,
           ),
           border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(12),
-            borderSide: BorderSide(color: Colors.grey[300]!),
+            borderRadius: BorderRadius.circular(10),
+            borderSide: BorderSide(color: Colors.blueGrey[200]!),
           ),
           enabledBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(12),
-            borderSide: BorderSide(color: Colors.grey[200]!),
+            borderRadius: BorderRadius.circular(10),
+            borderSide: BorderSide(color: Colors.blueGrey[200]!),
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(10),
+            borderSide: BorderSide(color: brandBlue, width: 1.5),
+          ),
+          errorBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(10),
+            borderSide: const BorderSide(color: Colors.redAccent),
           ),
         ),
         hint: Text(
@@ -1208,20 +1546,21 @@ class _FormularioPageState extends State<FormularioPage> {
               : 'Selecciona un equipo',
           style: TextStyle(fontSize: 14, color: Colors.grey[600]),
         ),
-        items: _equiposDisponibles.map<DropdownMenuItem<String>>((equipo) {
-          final nombre = equipo['nombre']?.toString() ?? 'Sin nombre';
-          return DropdownMenuItem<String>(
-            value: nombre,
-            child: Text(nombre),
-          );
-        }).toList(),
+        items:
+            _equiposDisponibles.map<DropdownMenuItem<String>>((equipo) {
+              final nombre = equipo['nombre']?.toString() ?? 'Sin nombre';
+              return DropdownMenuItem<String>(
+                value: nombre,
+                child: Text(nombre),
+              );
+            }).toList(),
         onChanged: (String? newValue) {
           setState(() {
             _equipoController.text = newValue ?? '';
           });
         },
-        validator: (val) =>
-            (val == null || val.isEmpty) ? 'Campo obligatorio' : null,
+        validator:
+            (val) => (val == null || val.isEmpty) ? 'Campo obligatorio' : null,
       ),
     );
   }

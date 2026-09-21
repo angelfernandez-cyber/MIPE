@@ -6,6 +6,8 @@ import 'dart:convert';
 import 'login_controller.dart';
 import 'formulario_almacen_page.dart';
 import 'aseguramiento_excel_service.dart';
+import 'dart:async';
+import 'offline_sync_service.dart';
 
 class HistorialAseguramientoPage extends StatefulWidget {
   const HistorialAseguramientoPage({super.key});
@@ -36,11 +38,15 @@ class _HistorialAseguramientoPageState
   // progreso exportación (estado de la página, usado para resumen pequeño si lo deseas)
   double _exportProgress = 0.0;
   bool _isExporting = false;
+  Timer? _refreshTimer;
 
   @override
   void initState() {
     super.initState();
     _fetchDatos();
+    _refreshTimer = Timer.periodic(const Duration(seconds: 10), (_) {
+      if (mounted) _fetchDatos(showLoading: false);
+    });
 
     // Sincronización de scroll: lo que muevas abajo se mueve arriba
     _horizontalController.addListener(() {
@@ -54,36 +60,34 @@ class _HistorialAseguramientoPageState
   void dispose() {
     _horizontalController.dispose();
     _headerHorizontalController.dispose();
+    _refreshTimer?.cancel();
     super.dispose();
   }
 
-  Future<void> _fetchDatos() async {
-    setState(() => _isLoading = true);
+  Future<void> _fetchDatos({bool showLoading = true}) async {
+    if (showLoading) setState(() => _isLoading = true);
     try {
       final url = Uri.parse(
         '${loginController.supabaseUrl}/rest/v1/aseguramiento_plaguicidas?select=*&order=fecha.desc',
       );
-      final response = await http.get(
-        url,
+      final data = await OfflineSyncService.fetchListWithCache(
+        cacheKey: 'cache_aseguramiento_plaguicidas',
+        url: url,
         headers: {
           'apikey': loginController.apiKey,
           'Authorization': 'Bearer ${loginController.apiKey}',
         },
       );
-
-      if (response.statusCode == 200) {
+      if (mounted) {
         setState(() {
-          _todosLosRegistros = json.decode(response.body);
+          _todosLosRegistros = data;
           _registrosFiltrados = _todosLosRegistros;
           _isLoading = false;
           _paginaActual = 0;
         });
-      } else {
-        setState(() => _isLoading = false);
       }
     } catch (e) {
-      setState(() => _isLoading = false);
-      Get.snackbar("Error", "No se pudo conectar con el servidor");
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
@@ -670,7 +674,13 @@ class _HistorialAseguramientoPageState
         label: SizedBox(width: 140, child: Text('Producto', style: st)),
       ),
       DataColumn(
-        label: SizedBox(width: 110, child: Text('Proveedor', style: st)),
+        label: SizedBox(width: 110, child: Text('Casa Comercial', style: st)),
+      ),
+      DataColumn(
+        label: SizedBox(width: 75, child: Text('Formula C', style: st)),
+      ),
+      DataColumn(
+        label: SizedBox(width: 75, child: Text('Cat Toxic', style: st)),
       ),
       DataColumn(
         label: SizedBox(
@@ -679,7 +689,7 @@ class _HistorialAseguramientoPageState
         ),
       ),
       DataColumn(
-        label: SizedBox(width: 50, child: Text('Cant.', style: st)),
+        label: SizedBox(width: 50, child: Text('Cantidad', style: st)),
       ),
       DataColumn(
         label: SizedBox(width: 90, child: Text('Lote', style: st)),
@@ -758,6 +768,18 @@ class _HistorialAseguramientoPageState
             item['proveedor']?.toString().toUpperCase() ?? '',
             style: cellStyle,
           ),
+        ),
+      ),
+      DataCell(
+        SizedBox(
+          width: 75,
+          child: Text(item['formula_c']?.toString() ?? '', style: cellStyle),
+        ),
+      ),
+      DataCell(
+        SizedBox(
+          width: 75,
+          child: Text(item['cat_toxic']?.toString() ?? '', style: cellStyle),
         ),
       ),
       DataCell(

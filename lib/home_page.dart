@@ -4,9 +4,11 @@ import 'package:simple_barcode_scanner/simple_barcode_scanner.dart';
 import 'login_controller.dart';
 import 'formulario_page.dart';
 import 'dart:convert';
+import 'dart:async';
 import 'package:http/http.dart' as http;
 import 'package:flutter/services.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
+import 'offline_sync_service.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -67,8 +69,9 @@ class _HomePageState extends State<HomePage> {
         '${loginController.supabaseUrl}/rest/v1/aspersiones?bloque=eq.$bloque&select=*&order=id.desc&limit=1',
       );
 
-      final response = await http.get(
-        url,
+      final datos = await OfflineSyncService.fetchListWithCache(
+        cacheKey: 'cache_aspersiones_bloque_$bloque',
+        url: url,
         headers: {
           'apikey': loginController.apiKey,
           'Authorization': 'Bearer ${loginController.apiKey}',
@@ -77,22 +80,16 @@ class _HomePageState extends State<HomePage> {
 
       Get.back();
 
-      if (response.statusCode == 200) {
-        List<dynamic> datos = json.decode(response.body);
-
-        if (datos.isNotEmpty) {
-          Get.to(
-            () => const FormularioPage(),
-            arguments: {
-              ...Map<String, dynamic>.from(datos[0]),
-              'esLecturaForzada': true,
-            },
-          );
-        } else {
-          Get.to(() => const FormularioPage(), arguments: {'bloque': bloque});
-        }
+      if (datos.isNotEmpty) {
+        Get.to(
+          () => const FormularioPage(),
+          arguments: {
+            ...Map<String, dynamic>.from(datos[0]),
+            'esLecturaForzada': true,
+          },
+        );
       } else {
-        Get.snackbar("Error", "No se pudo consultar el bloque");
+        Get.to(() => const FormularioPage(), arguments: {'bloque': bloque});
       }
     } catch (e) {
       Get.back();
@@ -105,18 +102,15 @@ class _HomePageState extends State<HomePage> {
     final lectura = _obtenerModulos();
     return Scaffold(
       backgroundColor: const Color(0xFFF0F4F8),
-      body: RefreshIndicator(
-        color: brandBlue,
-
-        onRefresh: () async {
-          // 🔥 PEQUEÑA RECARGA VISUAL
-          setState(() {});
-
-          // Opcional:
-          await Future.delayed(const Duration(milliseconds: 700));
-        },
-
-        child: CustomScrollView(
+      body: Stack(
+        children: [
+          RefreshIndicator(
+            color: brandBlue,
+            onRefresh: () async {
+              setState(() {});
+              await Future.delayed(const Duration(milliseconds: 700));
+            },
+            child: CustomScrollView(
           slivers: [
             SliverAppBar(
               expandedHeight: 150.0,
@@ -233,15 +227,32 @@ class _HomePageState extends State<HomePage> {
                         ],
                         onTap: () => Get.toNamed('/gestusu'),
                       ),
+                      const SizedBox(height: 20),
+                      _buildActionCard(
+                        title: "RESPALDO Y LIMPIEZA",
+                        subtitle: "Copia segura antes de borrar información",
+                        icon: Icons.backup_rounded,
+                        gradient: [const Color(0xFF8B1E2D), const Color(0xFF5B111C)],
+                        onTap: () => Get.toNamed('/respaldo-limpieza'),
+                      ),
                     ],
                     const SizedBox(height: 50),
                     _buildLogoutButton(),
+                    const SizedBox(height: 50),
                   ],
                 ),
               ),
             ),
           ],
-        ),
+            ),
+          ),
+          const Positioned(
+            left: 16,
+            right: 16,
+            bottom: 18,
+            child: _OfflineSyncPanel(),
+          ),
+        ],
       ),
     );
   }
@@ -767,6 +778,270 @@ class _HomePageState extends State<HomePage> {
               ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+class _OfflineSyncPanel extends StatefulWidget {
+  const _OfflineSyncPanel();
+
+  @override
+  State<_OfflineSyncPanel> createState() => _OfflineSyncPanelState();
+}
+
+class _OfflineSyncPanelState extends State<_OfflineSyncPanel> {
+  int _pending = 0;
+  bool _syncing = false;
+  bool _minimized = true;
+  Timer? _timer;
+
+  LoginController get _loginController => Get.find<LoginController>();
+
+  @override
+  void initState() {
+    super.initState();
+    _refresh();
+    _timer = Timer.periodic(const Duration(seconds: 2), (_) => _refresh());
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _refresh() async {
+    final count = await OfflineSyncService.pendingCount();
+    if (mounted && count != _pending) setState(() => _pending = count);
+  }
+
+  Future<void> _syncNow() async {
+    if (_syncing) return;
+    setState(() => _syncing = true);
+    final synced = await OfflineSyncService.syncPending(
+      supabaseUrl: _loginController.supabaseUrl,
+      apiKey: _loginController.apiKey,
+    );
+    await _refresh();
+    if (mounted) {
+      setState(() => _syncing = false);
+      Get.snackbar(
+        synced > 0 ? 'Sincronización completa' : 'Sin conexión',
+        synced > 0
+            ? '$synced registro${synced == 1 ? '' : 's'} enviado${synced == 1 ? '' : 's'} correctamente.'
+            : 'Los datos siguen guardados en el dispositivo y se reintentará automáticamente.',
+        snackPosition: SnackPosition.BOTTOM,
+        backgroundColor: synced > 0 ? const Color(0xFF16794A) : const Color(0xFF8A5A00),
+        colorText: Colors.white,
+        margin: const EdgeInsets.fromLTRB(16, 0, 16, 92),
+        borderRadius: 16,
+      );
+    }
+  }
+
+  void _showDetails() {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (context) => _SyncDetailsSheet(
+        pending: _pending,
+        syncing: _syncing,
+        onSync: _syncNow,
+      ),
+    );
+  }
+
+  void _minimizeFromSwipe(DragEndDetails details) {
+    if ((details.primaryVelocity ?? 0) > 350) {
+      setState(() => _minimized = true);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final hasPending = _pending > 0;
+    final accent = hasPending ? const Color(0xFFE18A19) : const Color(0xFF168B59);
+    final icon = hasPending ? Icons.cloud_upload_rounded : Icons.cloud_done_rounded;
+
+    return GestureDetector(
+      onHorizontalDragEnd: _minimizeFromSwipe,
+      child: _minimized
+          ? Align(
+              alignment: Alignment.centerRight,
+              child: _buildMinimized(accent, icon),
+            )
+          : _buildExpanded(accent, icon, hasPending),
+    );
+  }
+
+  Widget _buildExpanded(Color accent, IconData icon, bool hasPending) {
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 280),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: accent.withOpacity(0.22)),
+        boxShadow: [
+          BoxShadow(
+            color: const Color(0xFF183B56).withOpacity(0.16),
+            blurRadius: 24,
+            offset: const Offset(0, 10),
+          ),
+        ],
+      ),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(22),
+          onTap: _showDetails,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(14, 12, 10, 12),
+            child: Row(
+              children: [
+                Container(
+                  width: 44,
+                  height: 44,
+                  decoration: BoxDecoration(
+                    color: accent.withOpacity(0.12),
+                    borderRadius: BorderRadius.circular(15),
+                  ),
+                  child: Icon(icon, color: accent, size: 25),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        hasPending ? 'Datos pendientes por cargar' : 'Datos protegidos',
+                        style: const TextStyle(
+                          color: Color(0xFF17324D),
+                          fontSize: 13,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        hasPending
+                            ? '$_pending registro${_pending == 1 ? '' : 's'} esperan conexión'
+                            : 'Todo está sincronizado y disponible offline',
+                        style: TextStyle(color: Colors.blueGrey.shade600, fontSize: 11),
+                      ),
+                    ],
+                  ),
+                ),
+                if (hasPending)
+                  IconButton(
+                    tooltip: 'Sincronizar ahora',
+                    onPressed: _syncing ? null : _syncNow,
+                    icon: _syncing
+                        ? SizedBox(
+                            width: 20,
+                            height: 20,
+                            child: CircularProgressIndicator(strokeWidth: 2, color: accent),
+                          )
+                        : Icon(Icons.sync_rounded, color: accent),
+                  )
+                else
+                  Icon(Icons.chevron_right_rounded, color: Colors.blueGrey.shade300),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildMinimized(Color accent, IconData icon) {
+    return Material(
+      color: Colors.white,
+      elevation: 12,
+      shadowColor: const Color(0xFF183B56).withOpacity(0.25),
+      borderRadius: BorderRadius.circular(18),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(18),
+        onTap: _showDetails,
+        child: Container(
+          width: 58,
+          height: 58,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(color: accent.withOpacity(0.28)),
+          ),
+          child: Icon(icon, color: accent, size: 28),
+        ),
+      ),
+    );
+  }
+}
+
+class _SyncDetailsSheet extends StatelessWidget {
+  final int pending;
+  final bool syncing;
+  final Future<void> Function() onSync;
+
+  const _SyncDetailsSheet({required this.pending, required this.syncing, required this.onSync});
+
+  @override
+  Widget build(BuildContext context) {
+    final hasPending = pending > 0;
+    return Container(
+      padding: const EdgeInsets.fromLTRB(22, 12, 22, 24),
+      decoration: const BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(30)),
+      ),
+      child: SafeArea(
+        top: false,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Center(
+              child: Container(
+                width: 42,
+                height: 5,
+                decoration: BoxDecoration(color: Colors.blueGrey.shade100, borderRadius: BorderRadius.circular(10)),
+              ),
+            ),
+            const SizedBox(height: 22),
+            Row(
+              children: [
+                Icon(hasPending ? Icons.cloud_upload_rounded : Icons.cloud_done_rounded,
+                    color: hasPending ? const Color(0xFFE18A19) : const Color(0xFF168B59), size: 30),
+                const SizedBox(width: 12),
+                const Expanded(
+                  child: Text('Estado de sincronización', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: Color(0xFF17324D))),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Text(
+              hasPending
+                  ? 'Hay $pending registro${pending == 1 ? '' : 's'} guardado${pending == 1 ? '' : 's'} en este dispositivo. Se cargarán en Supabase cuando exista conexión.'
+                  : 'No hay datos pendientes. La aplicación conserva la información disponible para trabajar sin internet.',
+              style: TextStyle(color: Colors.blueGrey.shade700, height: 1.45),
+            ),
+            const SizedBox(height: 20),
+            if (hasPending)
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton.icon(
+                  onPressed: syncing ? null : onSync,
+                  icon: syncing
+                      ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                      : const Icon(Icons.sync_rounded),
+                  label: Text(syncing ? 'Sincronizando...' : 'Sincronizar ahora'),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: const Color(0xFF008DC5),
+                    padding: const EdgeInsets.symmetric(vertical: 15),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+                  ),
+                ),
+              ),
+          ],
         ),
       ),
     );

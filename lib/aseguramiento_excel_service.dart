@@ -7,12 +7,10 @@
 // Asegúrate de tener la plantilla en assets y declarada en pubspec.yaml.
 
 import 'dart:convert';
-import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/services.dart' show rootBundle, ByteData;
 import 'package:archive/archive.dart';
-import 'package:path_provider/path_provider.dart';
-import 'package:open_filex/open_filex.dart';
+import 'excel_file_saver.dart';
 
 class AseguramientoExcelService {
   /// Devuelve un valor seguro según tipo esperado
@@ -223,7 +221,7 @@ class AseguramientoExcelService {
       if (cancelToken?.isCancelled == true) throw Exception('Exportación cancelada por el usuario.');
 
       final String fileName = 'Aseguramiento_$nombreArchivo.xlsx';
-      final String savedPath = await _saveFileNative(encodedBytes, fileName);
+      final String savedPath = await saveExcelBytes(encodedBytes, fileName);
 
       onProgress?.call(1.0);
 
@@ -231,28 +229,6 @@ class AseguramientoExcelService {
     } catch (e) {
       rethrow;
     }
-  }
-
-  // Guarda el archivo en almacenamiento y lo abre, devuelve la ruta completa
-  static Future<String> _saveFileNative(List<int> bytes, String fileName) async {
-    Directory? directory;
-    try {
-      directory = await getExternalStorageDirectory();
-    } catch (_) {
-      directory = null;
-    }
-    if (directory == null) {
-      directory = await getApplicationDocumentsDirectory();
-    }
-    if (directory == null) throw Exception('No se pudo acceder al almacenamiento del dispositivo.');
-
-    final fullPath = '${directory.path}/$fileName';
-    final file = File(fullPath);
-    await file.writeAsBytes(bytes, flush: true);
-    try {
-      await OpenFilex.open(fullPath);
-    } catch (_) {}
-    return fullPath;
   }
 
   // ---------------- Helpers ----------------

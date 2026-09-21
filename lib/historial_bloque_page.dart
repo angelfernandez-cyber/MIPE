@@ -8,6 +8,8 @@ import 'login_controller.dart';
 import 'package:intl/intl.dart';
 import 'package:flutter_application_1/excel_service.dart'; // ajusta la ruta si es necesario
 import 'dart:math';
+import 'dart:async';
+import 'offline_sync_service.dart';
 
 class HistorialBloquePage extends StatefulWidget {
   final String bloque;
@@ -36,11 +38,18 @@ class _HistorialBloquePageState extends State<HistorialBloquePage> {
   // progreso
   double _exportProgress = 0.0;
   bool _isExporting = false;
+  Timer? _refreshTimer;
 
   @override
   void initState() {
     super.initState();
     futureRegistros = fetchRegistrosPorBloque();
+    _refreshTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+      if (!mounted) return;
+      setState(() {
+        futureRegistros = fetchRegistrosPorBloque();
+      });
+    });
     _searchController.addListener(() {
       setState(() {
         // Al cambiar la búsqueda, las semanas disponibles pueden variar:
@@ -53,6 +62,7 @@ class _HistorialBloquePageState extends State<HistorialBloquePage> {
   @override
   void dispose() {
     _searchController.dispose();
+    _refreshTimer?.cancel();
     super.dispose();
   }
 
@@ -64,19 +74,14 @@ class _HistorialBloquePageState extends State<HistorialBloquePage> {
         '${loginController.supabaseUrl}/rest/v1/aspersiones?bloque=eq.$numeroBloque&select=*&order=fecha_registro.desc',
       );
 
-      final response = await http.get(
-        url,
+      return OfflineSyncService.fetchListWithCache(
+        cacheKey: 'cache_aspersiones_bloque_$numeroBloque',
+        url: url,
         headers: {
           'apikey': loginController.apiKey,
           'Authorization': 'Bearer ${loginController.apiKey}',
         },
       );
-
-      if (response.statusCode == 200) {
-        return json.decode(response.body);
-      } else {
-        return [];
-      }
     } catch (e) {
       return [];
     }
@@ -127,15 +132,24 @@ class _HistorialBloquePageState extends State<HistorialBloquePage> {
   // -------------------------
   // Agrupación por mes
   // -------------------------
+  DateTime? _fechaDelRegistro(dynamic registro) {
+    if (registro is! Map) return null;
+    for (final campo in ['fecha_registro', 'fecha', 'created_at']) {
+      final valor = registro[campo];
+      if (valor == null) continue;
+      final fecha = DateTime.tryParse(valor.toString());
+      if (fecha != null) return fecha.toLocal();
+    }
+    return null;
+  }
+
   void _agruparRegistrosPorMes(List<dynamic> registros) {
     _registrosAgrupados.clear();
     _listaMeses.clear();
 
     for (var reg in registros) {
-      DateTime fechaReg = DateTime.tryParse(
-            reg['fecha_registro'] ?? '',
-          )?.toLocal() ??
-          DateTime.now();
+      final fechaReg = _fechaDelRegistro(reg);
+      if (fechaReg == null) continue;
 
       // Agrupar por mes
       String mesLabel = DateFormat('MMMM y', 'es').format(fechaReg);
@@ -155,9 +169,24 @@ class _HistorialBloquePageState extends State<HistorialBloquePage> {
       _registrosAgrupados[tag]!.add(reg);
     }
 
-    _listaMeses = _registrosAgrupados.keys.toList();
+    _listaMeses = _registrosAgrupados.keys.toList()
+      ..sort((a, b) {
+        final fechaA = _registrosAgrupados[a]!
+            .map(_fechaDelRegistro)
+            .whereType<DateTime>()
+            .fold<DateTime?>(null, (prev, fecha) =>
+                prev == null || fecha.isAfter(prev) ? fecha : prev);
+        final fechaB = _registrosAgrupados[b]!
+            .map(_fechaDelRegistro)
+            .whereType<DateTime>()
+            .fold<DateTime?>(null, (prev, fecha) =>
+                prev == null || fecha.isAfter(prev) ? fecha : prev);
+        return (fechaB ?? DateTime(1900)).compareTo(fechaA ?? DateTime(1900));
+      });
 
-    if (_mesSeleccionado == null && _listaMeses.isNotEmpty) {
+    if ((_mesSeleccionado == null ||
+            !_registrosAgrupados.containsKey(_mesSeleccionado)) &&
+        _listaMeses.isNotEmpty) {
       _mesSeleccionado = _listaMeses[0];
     }
   }
@@ -173,6 +202,16 @@ class _HistorialBloquePageState extends State<HistorialBloquePage> {
     return base.subtract(Duration(days: base.weekday - 1));
   }
 
+  int _semanaCalendario(DateTime fecha) {
+    final jueves = fecha.add(Duration(days: DateTime.thursday - fecha.weekday));
+    final primerJueves = DateTime(jueves.year, 1, 4);
+    final inicioPrimeraSemana = primerJueves.subtract(
+      Duration(days: primerJueves.weekday - DateTime.monday),
+    );
+    final inicioFecha = DateTime(jueves.year, jueves.month, jueves.day);
+    return (inicioFecha.difference(inicioPrimeraSemana).inDays ~/ 7) + 1;
+  }
+
   /// Agrupa los registros (ya filtrados) en semanas.
   /// Devuelve una lista de entradas ordenadas de la semana más reciente
   /// a la más antigua. La clave es el lunes de cada semana.
@@ -181,9 +220,8 @@ class _HistorialBloquePageState extends State<HistorialBloquePage> {
     final Map<DateTime, List<dynamic>> mapa = {};
 
     for (final reg in registros) {
-      final fecha =
-          DateTime.tryParse(reg['fecha_registro'] ?? '')?.toLocal() ??
-              DateTime.now();
+        final fecha = _fechaDelRegistro(reg);
+        if (fecha == null) continue;
       final inicio = _inicioDeSemana(fecha);
       mapa.putIfAbsent(inicio, () => []).add(reg);
     }
@@ -482,16 +520,61 @@ class _HistorialBloquePageState extends State<HistorialBloquePage> {
                         builder: (context, snapshot) {
                           if (snapshot.hasData && !snapshot.hasError) {
                             _agruparRegistrosPorMes(snapshot.data!);
-                            return DropdownButton<String>(
+                            return DropdownButtonFormField<String>(
+                              initialValue: _mesSeleccionado,
                               isExpanded: true,
-                              value: _mesSeleccionado,
-                              hint: const Text('Filtrar por mes'),
-                              items: _listaMeses.map((mes) {
-                                return DropdownMenuItem<String>(
-                                  value: mes,
-                                  child: Text(mes, overflow: TextOverflow.ellipsis),
-                                );
-                              }).toList(),
+                              icon: const Icon(Icons.arrow_drop_down_rounded),
+                              iconEnabledColor: brandBlue,
+                              style: const TextStyle(
+                                color: Color(0xFF263238),
+                                fontSize: 14,
+                                fontWeight: FontWeight.w500,
+                              ),
+                              decoration: InputDecoration(
+                                labelText: 'Filtrar por mes',
+                                prefixIcon: const Icon(
+                                  Icons.calendar_month_outlined,
+                                  color: brandBlue,
+                                  size: 20,
+                                ),
+                                filled: true,
+                                fillColor: Colors.white,
+                                contentPadding: const EdgeInsets.symmetric(
+                                  horizontal: 14,
+                                  vertical: 12,
+                                ),
+                                border: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(10),
+                                  borderSide: BorderSide(
+                                    color: Colors.blueGrey[200]!,
+                                  ),
+                                ),
+                                enabledBorder: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(10),
+                                  borderSide: BorderSide(
+                                    color: Colors.blueGrey[200]!,
+                                  ),
+                                ),
+                                focusedBorder: const OutlineInputBorder(
+                                  borderRadius: BorderRadius.all(
+                                    Radius.circular(10),
+                                  ),
+                                  borderSide: BorderSide(
+                                    color: brandBlue,
+                                    width: 1.5,
+                                  ),
+                                ),
+                              ),
+                              items:
+                                  _listaMeses.map((mes) {
+                                    return DropdownMenuItem<String>(
+                                      value: mes,
+                                      child: Text(
+                                        mes,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    );
+                                  }).toList(),
                               onChanged: (value) {
                                 setState(() {
                                   _mesSeleccionado = value;
@@ -653,9 +736,8 @@ class _HistorialBloquePageState extends State<HistorialBloquePage> {
     final DateTime inicio = semana.key;
     final int cantidad = semana.value.length;
 
-    // idx 0 = semana más reciente. Numeramos cronológicamente:
-    // la más antigua es "Semana 1".
-    final int numeroSemana = total - idx;
+    final fechaRepresentativa = _fechaDelRegistro(semana.value.first) ?? inicio;
+    final int numeroSemana = _semanaCalendario(fechaRepresentativa);
 
     // Hay semana más antigua disponible cuando idx puede aumentar.
     final bool puedeMasAntigua = idx < total - 1;
@@ -693,7 +775,7 @@ class _HistorialBloquePageState extends State<HistorialBloquePage> {
               mainAxisSize: MainAxisSize.min,
               children: [
                 Text(
-                  'Semana $numeroSemana de $total',
+                  'Semana $numeroSemana',
                   style: const TextStyle(
                     fontWeight: FontWeight.w900,
                     fontSize: 14,
@@ -764,7 +846,7 @@ class _HistorialBloquePageState extends State<HistorialBloquePage> {
   }
 
   Widget _buildItemCard(dynamic reg) {
-    DateTime fecha = DateTime.parse(reg['fecha_registro']).toLocal();
+    final DateTime fecha = _fechaDelRegistro(reg) ?? DateTime.now();
     String hora = DateFormat('hh:mm a').format(fecha);
     String fechaCorta = DateFormat("d 'de' MMMM, y", 'es').format(fecha);
 
