@@ -3,10 +3,12 @@ import 'package:flutter/services.dart';
 import 'package:get/get.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'dart:io';
 import 'package:intl/intl.dart'; // Asegúrate de tener intl en tu pubspec.yaml
 import 'dart:async';
 import 'login_controller.dart';
 import 'offline_sync_service.dart';
+import 'firma_digital_service.dart';
 
 class AseguramientoPage extends StatefulWidget {
   final Map<String, dynamic>? dataInicial; // Datos que vienen del historial
@@ -56,8 +58,11 @@ class _AseguramientoPageState extends State<AseguramientoPage> {
   final List<String> _proveedores = [];
   final List<String> _presentaciones = [];
   final List<String> _colores = [];
-  final List<String> _formulasC = ['SI', 'NO'];
-  final List<String> _categoriasToxicologicas = ['IA', 'IB', 'II', 'III', 'IV'];
+  final List<String> _formulasC = [];
+  final List<String> _categoriasToxicologicas = [];
+  final List<String> _administradores = [];
+  final Map<String, String> _identificacionAdminPorNombre = {};
+  final Map<String, String> _firmasPorIdentificacion = {};
 
   // --- ESTADOS BOTONES SELECCIÓN ---
   String _estadoEtiqueta = 'CUMPLE';
@@ -65,8 +70,22 @@ class _AseguramientoPageState extends State<AseguramientoPage> {
   String _sellos = 'CUMPLE';
   String _puntosextraccion = 'CUMPLE';
 
-  // --- cumplimiento textual (solo UI) ---
-  String _cumplimiento = 'CUMPLE'; // valores: 'CUMPLE' | 'NO CUMPLE'
+  int get _porcentajeCumplimiento {
+    final criterios = [
+      _estadoEtiqueta,
+      _estadoTapa,
+      _sellos,
+      _puntosextraccion,
+    ];
+    final cumplidos =
+        criterios
+            .where((estado) => estado.trim().toUpperCase() == 'CUMPLE')
+            .length;
+    return cumplidos * 25;
+  }
+
+  String get _cumplimiento =>
+      _porcentajeCumplimiento == 100 ? 'CUMPLE' : 'NO CUMPLE';
 
   @override
   void initState() {
@@ -93,25 +112,187 @@ class _AseguramientoPageState extends State<AseguramientoPage> {
           widget.dataInicial!['densidad']?.toString() ?? '';
       _obsController.text = widget.dataInicial!['observaciones'] ?? '';
       _aseguraController.text =
-          widget.dataInicial?['identificacion_asegura'] ?? '';
-      _autorizaController.text = widget.dataInicial?['autorizacion'] ?? '';
+          widget.dataInicial?['nombre_quien_asegura'] ??
+          widget.dataInicial?['identificacion_asegura'] ??
+          '';
+      _autorizaController.text =
+          widget.dataInicial?['nombre_autoriza'] ??
+          widget.dataInicial?['autorizacion'] ??
+          '';
 
       // Actualizamos los estados de los botones
       _estadoEtiqueta = widget.dataInicial!['estado_etiqueta'] ?? 'CUMPLE';
       _estadoTapa = widget.dataInicial!['estado_tapa'] ?? 'CUMPLE';
       _sellos = widget.dataInicial!['sellos'] ?? 'CUMPLE';
       _puntosextraccion = widget.dataInicial!['puntos_extraccion'] ?? 'CUMPLE';
-
-      final incomingCumpl =
-          (widget.dataInicial!['cumplimiento'] ?? '').toString().toUpperCase();
-      _cumplimiento =
-          incomingCumpl == 'NO CUMPLE' || incomingCumpl == '0%'
-              ? 'NO CUMPLE'
-              : 'CUMPLE';
     } else {
       _semanaController.text = _semanaActual().toString();
+      _aseguraController.text =
+          loginController.loggedInUser.value?['nombres']?.toString() ?? '';
     }
     _cargarCatalogos();
+    _cargarAdministradores();
+    _cargarFirmas();
+  }
+
+  Future<void> _cargarAdministradores() async {
+    try {
+      final uri = Uri.parse(
+        '${loginController.supabaseUrl}/rest/v1/persona',
+      ).replace(
+        queryParameters: {
+          'select': 'nombres,identificacion',
+          'admin': 'eq.S',
+          'order': 'nombres.asc',
+        },
+      );
+      final registros = await OfflineSyncService.fetchListWithCache(
+        cacheKey: 'cache_persona_administradores',
+        url: uri,
+        headers: {
+          'apikey': loginController.apiKey,
+          'Authorization': 'Bearer ${loginController.apiKey}',
+        },
+      );
+      final nombres =
+          registros
+              .whereType<Map>()
+              .map((registro) => registro['nombres']?.toString().trim() ?? '')
+              .where((nombre) => nombre.isNotEmpty)
+              .toSet()
+              .toList()
+            ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+      final identificaciones = <String, String>{};
+      for (final registro in registros.whereType<Map>()) {
+        final nombre = registro['nombres']?.toString().trim() ?? '';
+        final identificacion =
+            registro['identificacion']?.toString().trim() ?? '';
+        if (nombre.isNotEmpty && identificacion.isNotEmpty) {
+          identificaciones[nombre] = identificacion;
+        }
+      }
+
+      final nombreActual =
+          loginController.loggedInUser.value?['nombres']?.toString().trim();
+      if (nombres.isEmpty &&
+          loginController.loggedInUser.value?['admin']?.toString().trim() ==
+              'S' &&
+          nombreActual != null &&
+          nombreActual.isNotEmpty) {
+        nombres.add(nombreActual);
+        final idActual =
+            loginController.loggedInUser.value?['identificacion']
+                ?.toString()
+                .trim();
+        if (idActual != null && idActual.isNotEmpty) {
+          identificaciones[nombreActual] = idActual;
+        }
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _administradores
+          ..clear()
+          ..addAll(nombres);
+        _identificacionAdminPorNombre
+          ..clear()
+          ..addAll(identificaciones);
+        if (_autorizaController.text.trim().isEmpty && nombres.length == 1) {
+          _autorizaController.text = nombres.first;
+        }
+      });
+    } catch (e) {
+      debugPrint('No se pudieron cargar los administradores: $e');
+    }
+  }
+
+  Future<void> _cargarFirmas() async {
+    final identificacion =
+        loginController.loggedInUser.value?['identificacion']?.toString() ?? '';
+    if (identificacion.isEmpty || loginController.esVisitante) return;
+    final password = loginController.passwordEnMemoria;
+    final firmas =
+        password == null || password.isEmpty
+            ? await FirmaDigitalService.leerCache(identificacion)
+            : await FirmaDigitalService.obtenerFirmas(
+              supabaseUrl: loginController.supabaseUrl,
+              apiKey: loginController.apiKey,
+              identificacion: identificacion,
+              password: password,
+            );
+    if (!mounted) return;
+    setState(() {
+      _firmasPorIdentificacion
+        ..clear()
+        ..addEntries(
+          firmas
+              .where((firma) {
+                final imagen = firma['firma_png_base64']?.toString() ?? '';
+                return imagen.isNotEmpty;
+              })
+              .map(
+                (firma) => MapEntry(
+                  firma['identificacion'].toString(),
+                  firma['firma_png_base64'].toString(),
+                ),
+              ),
+        );
+    });
+  }
+
+  String? _firmaAdministradorSeleccionado() {
+    final identificacion = _identificacionAdminSeleccionado();
+    return identificacion == null
+        ? null
+        : _firmasPorIdentificacion[identificacion];
+  }
+
+  String? _identificacionAdminSeleccionado() {
+    final nombre = _autorizaController.text;
+    String? identificacion;
+    for (final entry in _identificacionAdminPorNombre.entries) {
+      if (entry.key.toLowerCase() == nombre.toLowerCase()) {
+        identificacion = entry.value;
+        break;
+      }
+    }
+    return identificacion;
+  }
+
+  Widget _vistaFirma(String? firma, String etiqueta) {
+    if (firma == null || firma.isEmpty) return const SizedBox.shrink();
+    try {
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 12),
+        child: Row(
+          children: [
+            const SizedBox(width: 48),
+            Container(
+              constraints: const BoxConstraints(maxWidth: 240),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                border: Border.all(color: brandBlue.withOpacity(0.18)),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Image.memory(
+                base64Decode(firma),
+                height: 48,
+                fit: BoxFit.contain,
+                errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Text(
+              etiqueta,
+              style: const TextStyle(fontSize: 11, color: Colors.blueGrey),
+            ),
+          ],
+        ),
+      );
+    } catch (_) {
+      return const SizedBox.shrink();
+    }
   }
 
   int _semanaActual() {
@@ -123,8 +304,7 @@ class _AseguramientoPageState extends State<AseguramientoPage> {
     final primerJueves = cuatroDeEnero.add(
       Duration(days: DateTime.thursday - cuatroDeEnero.weekday),
     );
-    final semana =
-      1 + juevesActual.difference(primerJueves).inDays ~/ 7;
+    final semana = 1 + juevesActual.difference(primerJueves).inDays ~/ 7;
 
     // El catálogo de semanas de la aplicación llega hasta la semana 52.
     return semana > 52 ? 52 : semana;
@@ -192,6 +372,16 @@ class _AseguramientoPageState extends State<AseguramientoPage> {
           order: 'nombre.asc',
         ),
         _fetchCatalogo('aseguramiento_colores', 'nombre', order: 'nombre.asc'),
+        _fetchCatalogo(
+          'aseguramiento_formulas_c',
+          'nombre',
+          order: 'nombre.asc',
+        ),
+        _fetchCatalogo(
+          'aseguramiento_categorias_toxicologicas',
+          'nombre',
+          order: 'nombre.asc',
+        ),
       ]);
       if (!mounted) return;
       setState(() {
@@ -212,6 +402,12 @@ class _AseguramientoPageState extends State<AseguramientoPage> {
         _colores
           ..clear()
           ..addAll(resultados[4].map((item) => item['nombre'].toString()));
+        _formulasC
+          ..clear()
+          ..addAll(resultados[5].map((item) => item['nombre'].toString()));
+        _categoriasToxicologicas
+          ..clear()
+          ..addAll(resultados[6].map((item) => item['nombre'].toString()));
         if (!_colores.contains('OTRO')) _colores.add('OTRO');
         final colorGuardado = _colorController.text.trim().toUpperCase();
         if (colorGuardado.isNotEmpty && !_colores.contains(colorGuardado)) {
@@ -250,16 +446,57 @@ class _AseguramientoPageState extends State<AseguramientoPage> {
   }
 
   Future<void> _guardarEnBaseDeDatos() async {
+    if (!loginController.visitantePuedeInsertar) {
+      Get.snackbar(
+        'Solo lectura',
+        'El perfil visitante no tiene permiso para insertar datos.',
+      );
+      return;
+    }
     if (!_formKey.currentState!.validate()) return;
     setState(() => _isSaving = true);
     Map<String, dynamic> body = {};
 
     try {
+      // Asegura que el usuario y los administradores terminaron de cargar
+      // antes de construir el registro y copiar las firmas seleccionadas.
+      await _cargarAdministradores();
+      await _cargarFirmas();
+
       // Helper local para convertir a mayúsculas y devolver null si vacío
       String? up(String? s) {
         if (s == null) return null;
         final t = s.trim();
         return t.isEmpty ? null : t.toUpperCase();
+      }
+
+      final idFirmaAutoriza = _identificacionAdminSeleccionado();
+      final idFirmaAsegura =
+          loginController.loggedInUser.value?['identificacion']
+              ?.toString()
+              .trim() ??
+          widget.dataInicial?['identificacion_asegura']?.toString().trim();
+      final firmaAsegura =
+          (idFirmaAsegura == null
+              ? null
+              : _firmasPorIdentificacion[idFirmaAsegura]) ??
+          widget.dataInicial?['firma_asegura_base64']?.toString();
+      final firmaAutoriza =
+          (idFirmaAutoriza == null
+              ? null
+              : _firmasPorIdentificacion[idFirmaAutoriza]) ??
+          widget.dataInicial?['firma_autoriza_base64']?.toString();
+
+      if ((firmaAsegura == null || firmaAsegura.isEmpty) && !widget.esLectura) {
+        throw Exception(
+          'No hay firma guardada para quien asegura. Guarda tu firma digital e inténtalo de nuevo.',
+        );
+      }
+      if ((firmaAutoriza == null || firmaAutoriza.isEmpty) &&
+          !widget.esLectura) {
+        throw Exception(
+          'No hay firma guardada para quien autoriza. Selecciona un administrador con firma registrada.',
+        );
       }
 
       // Campos numéricos y fecha se mantienen igual; los textos se pasan por up(...)
@@ -290,7 +527,7 @@ class _AseguramientoPageState extends State<AseguramientoPage> {
         'sellos': _sellos,
         'puntos_extraccion': _puntosextraccion,
 
-        'cumplimiento': _cumplimiento == 'CUMPLE' ? '100%' : '0%',
+        'cumplimiento': '$_porcentajeCumplimiento%',
 
         // Campos numéricos
         // cantidad como entero (si está vacío queda 0)
@@ -313,8 +550,14 @@ class _AseguramientoPageState extends State<AseguramientoPage> {
 
         'observaciones': up(_obsController.text) ?? 'N/A',
         'autorizacion': up(_autorizaController.text),
-
-        'identificacion_asegura': up(_aseguraController.text),
+        'nombre_autoriza': up(_autorizaController.text),
+        'firma_asegura_base64': firmaAsegura,
+        'firma_autoriza_base64': firmaAutoriza,
+        'identificacion_asegura': idFirmaAsegura,
+        'identificacion_autoriza':
+            idFirmaAutoriza ??
+            widget.dataInicial?['identificacion_autoriza']?.toString(),
+        'nombre_quien_asegura': up(_aseguraController.text),
       };
 
       final url = Uri.parse(
@@ -363,11 +606,15 @@ class _AseguramientoPageState extends State<AseguramientoPage> {
         _aseguraController.clear();
         _autorizaController.clear();
         setState(() {
+          _aseguraController.text =
+              loginController.loggedInUser.value?['nombres']?.toString() ?? '';
+          if (_administradores.length == 1) {
+            _autorizaController.text = _administradores.first;
+          }
           _estadoEtiqueta = 'CUMPLE';
           _estadoTapa = 'CUMPLE';
           _sellos = 'CUMPLE';
           _puntosextraccion = 'CUMPLE';
-          _cumplimiento = 'CUMPLE';
         });
       } else {
         throw Exception('Error de Supabase: ${response.body}');
@@ -384,10 +631,24 @@ class _AseguramientoPageState extends State<AseguramientoPage> {
         'Guardado sin internet',
         'Se sincronizará automáticamente al recuperar conexión',
       );
+    } on HandshakeException {
+      await OfflineSyncService.enqueue('aseguramiento_plaguicidas', body);
+      Get.snackbar(
+        'Guardado en este dispositivo',
+        'No se pudo validar el certificado de la conexión. El registro se subirá cuando la conexión sea segura.',
+      );
     } catch (e) {
+      final errorServidor = e.toString();
+      final errorNormalizado = errorServidor.toLowerCase();
+      final detalle =
+          errorServidor.contains('PGRST204') ||
+                  errorServidor.contains('42703') ||
+                  errorNormalizado.contains('could not find the')
+              ? 'A Supabase le faltan columnas del formulario. Ejecuta supabase/firmas_digitales.sql en el SQL Editor y vuelve a intentar.'
+              : errorServidor;
       Get.snackbar(
         'Error',
-        'No se pudo guardar el registro: $e',
+        'No se pudo guardar el registro: $detalle',
         backgroundColor: Colors.red,
         colorText: Colors.white,
         duration: const Duration(seconds: 8),
@@ -537,7 +798,7 @@ class _AseguramientoPageState extends State<AseguramientoPage> {
                 children: [
                   Expanded(
                     child: _buildDropdown<String>(
-                      label: 'Presentación-(Cantidad)',
+                      label: 'Presentación',
                       icon: Icons.layers,
                       values: _presentaciones,
                       selectedValue:
@@ -560,12 +821,25 @@ class _AseguramientoPageState extends State<AseguramientoPage> {
                       isDecimal: false, // Entero para unidades físicas
                     ),
                   ),
-                  const SizedBox(width: 10),
+                ],
+              ),
+
+              Row(
+                children: [
                   Expanded(
                     child: _buildTextField(
                       _loteController,
                       '# Lote',
                       Icons.tag, // Texto para permitir códigos de lote
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: _buildNumberInput(
+                      _cantidadController,
+                      'Cantidad (Unidad)',
+                      Icons.scale,
+                      isDecimal: false, // Entero para gramajes exactos
                     ),
                   ),
                 ],
@@ -646,35 +920,20 @@ class _AseguramientoPageState extends State<AseguramientoPage> {
               _buildCumplimientoSelector(),
 
               _sectionTitle("ANÁLISIS FÍSICO-QUÍMICO"),
-              Row(
-                children: [
-                  Expanded(
-                    child: _buildNumberInput(
-                      _cantidadController,
-                      'Cantidad cc/g',
-                      Icons.scale,
-                      isDecimal: false, // Entero para gramajes exactos
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: _buildDropdown<String>(
-                      label: 'Color',
-                      icon: Icons.colorize,
-                      values: _colores,
-                      selectedValue:
-                          _colorController.text.isEmpty
-                              ? null
-                              : _colorController.text,
-                      labelForValue: (value) => value,
-                      onChanged:
-                          (value) => setState(() {
-                            _colorController.text = value ?? '';
-                            if (value != 'OTRO') _otroColorController.clear();
-                          }),
-                    ),
-                  ),
-                ],
+              _buildDropdown<String>(
+                label: 'Color',
+                icon: Icons.colorize,
+                values: _colores,
+                selectedValue:
+                    _colorController.text.isEmpty
+                        ? null
+                        : _colorController.text,
+                labelForValue: (value) => value,
+                onChanged:
+                    (value) => setState(() {
+                      _colorController.text = value ?? '';
+                      if (value != 'OTRO') _otroColorController.clear();
+                    }),
               ),
               if (_colorController.text == 'OTRO')
                 _buildTextField(
@@ -716,13 +975,45 @@ class _AseguramientoPageState extends State<AseguramientoPage> {
               ),
               _buildTextField(
                 _aseguraController,
-                'Quien Asegura',
+                'Quién asegura',
                 Icons.verified_user,
+                readOnly: true,
               ),
-              _buildTextField(
-                _autorizaController,
-                'Quien Autoriza',
-                Icons.admin_panel_settings,
+              _vistaFirma(
+                _firmasPorIdentificacion[loginController
+                            .loggedInUser
+                            .value?['identificacion']
+                            ?.toString() ??
+                        ''] ??
+                    widget.dataInicial?['firma_asegura_base64']?.toString(),
+                'Firma de quien asegura',
+              ),
+              if (_administradores.length > 1)
+                _buildDropdown<String>(
+                  label: 'Quién autoriza',
+                  icon: Icons.admin_panel_settings,
+                  values: _administradores,
+                  selectedValue:
+                      _administradores.contains(_autorizaController.text)
+                          ? _autorizaController.text
+                          : null,
+                  labelForValue: (value) => value,
+                  onChanged:
+                      (value) => setState(
+                        () => _autorizaController.text = value ?? '',
+                      ),
+                )
+              else
+                _buildTextField(
+                  _autorizaController,
+                  'Quién autoriza',
+                  Icons.admin_panel_settings,
+                  readOnly: _administradores.length == 1,
+                ),
+              _vistaFirma(
+                _firmaAdministradorSeleccionado() ??
+                    widget.dataInicial?['firma_autoriza_base64']?.toString(),
+                'Firma de quien autoriza',
               ),
 
               const SizedBox(height: 30),
@@ -834,8 +1125,22 @@ class _AseguramientoPageState extends State<AseguramientoPage> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const SizedBox(height: 6),
+        Align(
+          alignment: Alignment.centerRight,
+          child: Text(
+            '$_porcentajeCumplimiento%',
+            style: TextStyle(
+              color:
+                  _porcentajeCumplimiento == 100
+                      ? brandGreen
+                      : Colors.redAccent,
+              fontSize: 18,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        ),
         AbsorbPointer(
-          absorbing: widget.esLectura,
+          absorbing: true,
           child: Row(
             children: [
               Expanded(
@@ -843,11 +1148,7 @@ class _AseguramientoPageState extends State<AseguramientoPage> {
                   "CUMPLE",
                   _cumplimiento == "CUMPLE",
                   brandGreen,
-                  () {
-                    setState(() {
-                      _cumplimiento = "CUMPLE";
-                    });
-                  },
+                  () {},
                 ),
               ),
               const SizedBox(width: 10),
@@ -856,11 +1157,7 @@ class _AseguramientoPageState extends State<AseguramientoPage> {
                   "NO CUMPLE",
                   _cumplimiento == "NO CUMPLE",
                   Colors.redAccent,
-                  () {
-                    setState(() {
-                      _cumplimiento = "NO CUMPLE";
-                    });
-                  },
+                  () {},
                 ),
               ),
             ],

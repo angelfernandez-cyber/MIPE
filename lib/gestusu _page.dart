@@ -4,6 +4,8 @@ import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'login_controller.dart';
 import 'gestusu_controller.dart';
+import 'visitante_config_dialog.dart';
+import 'visitante_service.dart';
 
 class GestionUsuariosPage extends StatefulWidget {
   const GestionUsuariosPage({super.key});
@@ -18,6 +20,8 @@ class _GestionUsuariosPageState extends State<GestionUsuariosPage> {
 
   List<dynamic> usuarios = [];
   bool isLoading = true;
+  bool _cargandoPerfilVisitante = false;
+  Map<String, dynamic>? _perfilVisitante;
 
   final Color brandBlue = const Color(0xFF008DC5);
   final Color darkBlue = const Color(0xFF005F86);
@@ -26,13 +30,122 @@ class _GestionUsuariosPageState extends State<GestionUsuariosPage> {
   void initState() {
     super.initState();
     _fetchUsuarios();
+    if (_esAdministrador) _cargarPerfilVisitante();
+  }
+
+  bool get _esAdministrador =>
+      loginController.loggedInUser.value?['admin']?.toString().trim() == 'S';
+
+  Future<void> _cargarPerfilVisitante() async {
+    setState(() => _cargandoPerfilVisitante = true);
+    try {
+      final config = await VisitanteService.obtenerConfiguracion(
+        supabaseUrl: loginController.supabaseUrl,
+        apiKey: loginController.apiKey,
+      );
+      if (mounted) setState(() => _perfilVisitante = config);
+    } catch (e) {
+      if (mounted) {
+        Get.snackbar(
+          'Perfil visitante',
+          e.toString().replaceFirst('Exception: ', ''),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _cargandoPerfilVisitante = false);
+    }
+  }
+
+  Widget _buildPerfilVisitante() {
+    final habilitado = _perfilVisitante?['habilitado'] == true;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 14,
+            offset: const Offset(0, 5),
+          ),
+        ],
+      ),
+      child: ListTile(
+        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        leading: Container(
+          width: 48,
+          height: 48,
+          decoration: BoxDecoration(
+            color: const Color(0xFF168B59).withOpacity(0.12),
+            borderRadius: BorderRadius.circular(15),
+          ),
+          child: const Icon(Icons.badge_rounded, color: Color(0xFF168B59)),
+        ),
+        title: const Text(
+          'Perfil visitante',
+          style: TextStyle(fontWeight: FontWeight.w800),
+        ),
+        subtitle: Text(
+          _cargandoPerfilVisitante
+              ? 'Cargando estado…'
+              : _perfilVisitante == null
+              ? 'Toca para configurar el perfil'
+              : 'Perfil permanente · No se puede eliminar',
+          style: const TextStyle(fontSize: 12),
+        ),
+        trailing:
+            _cargandoPerfilVisitante
+                ? const SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+                : Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 6,
+                  ),
+                  decoration: BoxDecoration(
+                    color: (_perfilVisitante == null
+                            ? Colors.blueGrey
+                            : habilitado
+                            ? const Color(0xFF168B59)
+                            : Colors.orange)
+                        .withOpacity(0.12),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Text(
+                    _perfilVisitante == null
+                        ? 'Configurar'
+                        : habilitado
+                        ? 'Activo'
+                        : 'Inhabilitado',
+                    style: TextStyle(
+                      color:
+                          _perfilVisitante == null
+                              ? Colors.blueGrey
+                              : habilitado
+                              ? const Color(0xFF168B59)
+                              : Colors.orange.shade800,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ),
+        onTap: () async {
+          await mostrarConfiguracionVisitantes(context);
+          if (mounted) await _cargarPerfilVisitante();
+        },
+      ),
+    );
   }
 
   Future<void> _fetchUsuarios() async {
     setState(() => isLoading = true);
     try {
       final url = Uri.parse(
-        '${loginController.supabaseUrl}/rest/v1/persona?select=nombres,identificacion,password,lectura',
+        '${loginController.supabaseUrl}/rest/v1/persona?select=nombres,identificacion,password,lectura,admin',
       );
 
       final response = await http.get(
@@ -46,11 +159,13 @@ class _GestionUsuariosPageState extends State<GestionUsuariosPage> {
       if (response.statusCode == 200) {
         List<dynamic> data = json.decode(response.body);
 
-        // 🔥 OCULTAR EL USUARIO ADMIN ACTUAL
+        // Los administradores gestionan su cuenta desde la sección propia.
         data.removeWhere(
           (u) =>
+              u['admin']?.toString().trim().toUpperCase() == 'S' ||
               u['identificacion'].toString() ==
-              loginController.loggedInUser.value?['identificacion'].toString(),
+                  loginController.loggedInUser.value?['identificacion']
+                      .toString(),
         );
 
         setState(() {
@@ -78,14 +193,23 @@ class _GestionUsuariosPageState extends State<GestionUsuariosPage> {
 
   void _mostrarDialogoModulos(Map<String, dynamic> user) {
     // Extraer módulos actuales (valores no numéricos del campo lectura)
-    final todosLosModulos = ['scanner', 'mapa', 'almacen'];
+    final todosLosModulos = [
+      'scanner',
+      'mapa',
+      'almacen',
+      'respaldo',
+      'administracion',
+      'exportar_excel',
+      'ver_aspersiones',
+    ];
     String lecturaActual = user['lectura']?.toString().trim() ?? '';
 
-    Set<String> modulosActivos = lecturaActual
-        .split(',')
-        .map((e) => e.trim().toLowerCase())
-        .where((e) => todosLosModulos.contains(e))
-        .toSet();
+    Set<String> modulosActivos =
+        lecturaActual
+            .split(',')
+            .map((e) => e.trim().toLowerCase())
+            .where((e) => todosLosModulos.contains(e))
+            .toSet();
 
     // Íconos y colores para cada módulo
     final moduloInfo = {
@@ -106,6 +230,30 @@ class _GestionUsuariosPageState extends State<GestionUsuariosPage> {
         'subtitle': 'Control de plaguicidas',
         'icon': Icons.storage_rounded,
         'color': const Color(0xFF38158A),
+      },
+      'respaldo': {
+        'label': 'RESPALDO Y LIMPIEZA',
+        'subtitle': 'Copias y limpieza de información',
+        'icon': Icons.backup_rounded,
+        'color': const Color(0xFF8B1E2D),
+      },
+      'administracion': {
+        'label': 'ADMINISTRACIÓN DE USUARIOS',
+        'subtitle': 'Gestión de accesos del personal',
+        'icon': Icons.admin_panel_settings_rounded,
+        'color': const Color(0xFF455A64),
+      },
+      'exportar_excel': {
+        'label': 'EXCEL',
+        'subtitle': 'Permitir exportar archivos',
+        'icon': Icons.file_download_rounded,
+        'color': const Color(0xFF087F5B),
+      },
+      'ver_aspersiones': {
+        'label': 'ASPERSIONES HOY',
+        'subtitle': 'Mostrar bloques asperjados hoy',
+        'icon': Icons.water_drop_rounded,
+        'color': const Color(0xFF1565C0),
       },
     };
 
@@ -194,99 +342,120 @@ class _GestionUsuariosPageState extends State<GestionUsuariosPage> {
                     // LISTA DE MÓDULOS
                     Padding(
                       padding: const EdgeInsets.all(16),
-                      child: Column(
-                        children: todosLosModulos.map((modulo) {
-                          final info = moduloInfo[modulo]!;
-                          final activo = modulosActivos.contains(modulo);
-                          final color = info['color'] as Color;
+                      child: SizedBox(
+                        height: 340,
+                        child: SingleChildScrollView(
+                          child: Column(
+                            children:
+                                todosLosModulos.map((modulo) {
+                                  final info = moduloInfo[modulo]!;
+                                  final activo = modulosActivos.contains(
+                                    modulo,
+                                  );
+                                  final color = info['color'] as Color;
 
-                          return GestureDetector(
-                            onTap: () {
-                              setDialogState(() {
-                                if (activo) {
-                                  modulosActivos.remove(modulo);
-                                } else {
-                                  modulosActivos.add(modulo);
-                                }
-                              });
-                            },
-                            child: AnimatedContainer(
-                              duration: const Duration(milliseconds: 200),
-                              margin: const EdgeInsets.only(bottom: 12),
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 16,
-                                vertical: 14,
-                              ),
-                              decoration: BoxDecoration(
-                                color: activo
-                                    ? color.withOpacity(0.08)
-                                    : Colors.grey[100],
-                                borderRadius: BorderRadius.circular(16),
-                                border: Border.all(
-                                  color: activo
-                                      ? color.withOpacity(0.4)
-                                      : Colors.grey.shade200,
-                                  width: 1.5,
-                                ),
-                              ),
-                              child: Row(
-                                children: [
-                                  Container(
-                                    padding: const EdgeInsets.all(10),
-                                    decoration: BoxDecoration(
-                                      color: activo
-                                          ? color.withOpacity(0.15)
-                                          : Colors.grey[200],
-                                      borderRadius: BorderRadius.circular(12),
-                                    ),
-                                    child: Icon(
-                                      info['icon'] as IconData,
-                                      color: activo ? color : Colors.grey,
-                                      size: 22,
-                                    ),
-                                  ),
-                                  const SizedBox(width: 14),
-                                  Expanded(
-                                    child: Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                        Text(
-                                          info['label'] as String,
-                                          style: TextStyle(
-                                            fontWeight: FontWeight.w800,
-                                            fontSize: 14,
-                                            color: activo
-                                                ? color
-                                                : Colors.grey[600],
-                                          ),
+                                  return GestureDetector(
+                                    onTap: () {
+                                      setDialogState(() {
+                                        if (activo) {
+                                          modulosActivos.remove(modulo);
+                                        } else {
+                                          modulosActivos.add(modulo);
+                                        }
+                                      });
+                                    },
+                                    child: AnimatedContainer(
+                                      duration: const Duration(
+                                        milliseconds: 200,
+                                      ),
+                                      margin: const EdgeInsets.only(bottom: 12),
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 16,
+                                        vertical: 14,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color:
+                                            activo
+                                                ? color.withOpacity(0.08)
+                                                : Colors.grey[100],
+                                        borderRadius: BorderRadius.circular(16),
+                                        border: Border.all(
+                                          color:
+                                              activo
+                                                  ? color.withOpacity(0.4)
+                                                  : Colors.grey.shade200,
+                                          width: 1.5,
                                         ),
-                                        Text(
-                                          info['subtitle'] as String,
-                                          style: TextStyle(
-                                            fontSize: 11,
-                                            color: Colors.grey[500],
+                                      ),
+                                      child: Row(
+                                        children: [
+                                          Container(
+                                            padding: const EdgeInsets.all(10),
+                                            decoration: BoxDecoration(
+                                              color:
+                                                  activo
+                                                      ? color.withOpacity(0.15)
+                                                      : Colors.grey[200],
+                                              borderRadius:
+                                                  BorderRadius.circular(12),
+                                            ),
+                                            child: Icon(
+                                              info['icon'] as IconData,
+                                              color:
+                                                  activo ? color : Colors.grey,
+                                              size: 22,
+                                            ),
                                           ),
-                                        ),
-                                      ],
+                                          const SizedBox(width: 14),
+                                          Expanded(
+                                            child: Column(
+                                              crossAxisAlignment:
+                                                  CrossAxisAlignment.start,
+                                              children: [
+                                                Text(
+                                                  info['label'] as String,
+                                                  style: TextStyle(
+                                                    fontWeight: FontWeight.w800,
+                                                    fontSize: 14,
+                                                    color:
+                                                        activo
+                                                            ? color
+                                                            : Colors.grey[600],
+                                                  ),
+                                                ),
+                                                Text(
+                                                  info['subtitle'] as String,
+                                                  style: TextStyle(
+                                                    fontSize: 11,
+                                                    color: Colors.grey[500],
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                          AnimatedSwitcher(
+                                            duration: const Duration(
+                                              milliseconds: 200,
+                                            ),
+                                            child: Icon(
+                                              activo
+                                                  ? Icons.toggle_on_rounded
+                                                  : Icons.toggle_off_rounded,
+                                              key: ValueKey(activo),
+                                              color:
+                                                  activo
+                                                      ? color
+                                                      : Colors.grey[400],
+                                              size: 36,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
                                     ),
-                                  ),
-                                  AnimatedSwitcher(
-                                    duration: const Duration(milliseconds: 200),
-                                    child: Icon(
-                                      activo
-                                          ? Icons.toggle_on_rounded
-                                          : Icons.toggle_off_rounded,
-                                      key: ValueKey(activo),
-                                      color: activo ? color : Colors.grey[400],
-                                      size: 36,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          );
-                        }).toList(),
+                                  );
+                                }).toList(),
+                          ),
+                        ),
                       ),
                     ),
 
@@ -312,14 +481,27 @@ class _GestionUsuariosPageState extends State<GestionUsuariosPage> {
                                 final lecturaViva =
                                     user['lectura']?.toString().trim() ?? '';
 
-                                final bloquesActuales = lecturaViva
-                                    .split(',')
-                                    .map((e) => e.trim())
-                                    .where((e) => int.tryParse(e) != null)
-                                    .toList();
+                                final bloquesActuales =
+                                    lecturaViva
+                                        .split(',')
+                                        .map((e) => e.trim())
+                                        .where((e) => int.tryParse(e) != null)
+                                        .toList();
+                                final permisosEspeciales =
+                                    lecturaViva
+                                        .split(',')
+                                        .map((e) => e.trim().toLowerCase())
+                                        .where(
+                                          (e) => [
+                                            'exportar_excel',
+                                            'ver_aspersiones',
+                                          ].contains(e),
+                                        )
+                                        .toList();
 
                                 final nuevaLectura = [
                                   ...modulosActivos,
+                                  ...permisosEspeciales,
                                   ...bloquesActuales,
                                 ].join(',');
 
@@ -331,9 +513,8 @@ class _GestionUsuariosPageState extends State<GestionUsuariosPage> {
 
                                 if (ok) {
                                   // Actualizar el mapa en memoria
-                                  user['lectura'] = nuevaLectura.isEmpty
-                                      ? 'N'
-                                      : nuevaLectura;
+                                  user['lectura'] =
+                                      nuevaLectura.isEmpty ? 'N' : nuevaLectura;
                                   setState(() {
                                     final index = usuarios.indexWhere(
                                       (u) =>
@@ -372,7 +553,6 @@ class _GestionUsuariosPageState extends State<GestionUsuariosPage> {
   }
 
   // ─── Serializar Set<int> → "401,402,410" ──────────────────────────────────
-
 
   // ─── Diálogo principal de permisos con grid de bloques ────────────────────
   void _mostrarDialogoBloques(Map<String, dynamic> user) {
@@ -534,11 +714,12 @@ class _GestionUsuariosPageState extends State<GestionUsuariosPage> {
                             child: AnimatedContainer(
                               duration: const Duration(milliseconds: 200),
                               decoration: BoxDecoration(
-                                gradient: activo
-                                    ? LinearGradient(
-                                        colors: [brandBlue, darkBlue],
-                                      )
-                                    : null,
+                                gradient:
+                                    activo
+                                        ? LinearGradient(
+                                          colors: [brandBlue, darkBlue],
+                                        )
+                                        : null,
                                 color: activo ? null : Colors.grey[100],
                                 borderRadius: BorderRadius.circular(12),
                               ),
@@ -546,9 +727,8 @@ class _GestionUsuariosPageState extends State<GestionUsuariosPage> {
                                 child: Text(
                                   '$bloque',
                                   style: TextStyle(
-                                    color: activo
-                                        ? Colors.white
-                                        : Colors.black54,
+                                    color:
+                                        activo ? Colors.white : Colors.black54,
                                     fontWeight: FontWeight.bold,
                                   ),
                                 ),
@@ -574,8 +754,6 @@ class _GestionUsuariosPageState extends State<GestionUsuariosPage> {
                           Expanded(
                             child: ElevatedButton(
                               onPressed: () async {
-                              
-
                                 // Preservar módulos al guardar bloques
                                 final modulosExistentes =
                                     user['lectura']
@@ -583,17 +761,16 @@ class _GestionUsuariosPageState extends State<GestionUsuariosPage> {
                                         .split(',')
                                         .map((e) => e.trim().toLowerCase())
                                         .where(
-                                          (e) => [
-                                            'scanner',
-                                            'mapa',
-                                            'almacen',
-                                          ].contains(e),
+                                          (e) =>
+                                              int.tryParse(e) == null &&
+                                              e != 'n' &&
+                                              e.isNotEmpty,
                                         )
                                         .toList() ??
                                     [];
 
-                                final bloquesOrdenados = seleccionados.toList()
-                                  ..sort();
+                                final bloquesOrdenados =
+                                    seleccionados.toList()..sort();
 
                                 final nuevaLectura = [
                                   ...modulosExistentes,
@@ -608,9 +785,8 @@ class _GestionUsuariosPageState extends State<GestionUsuariosPage> {
 
                                 if (ok) {
                                   // ✅ AGREGAR ESTA LÍNEA - actualizar el objeto user directamente
-                                  user['lectura'] = nuevaLectura.isEmpty
-                                      ? 'N'
-                                      : nuevaLectura;
+                                  user['lectura'] =
+                                      nuevaLectura.isEmpty ? 'N' : nuevaLectura;
 
                                   setState(() {
                                     final index = usuarios.indexWhere(
@@ -652,250 +828,271 @@ class _GestionUsuariosPageState extends State<GestionUsuariosPage> {
     );
   }
 
-Widget _buildModernUserCard(Map<String, dynamic> user) {
-  String nombre = user['nombres']?.toString().toUpperCase() ?? 'SIN NOMBRE';
-  String inicial = nombre.isNotEmpty ? nombre[0] : '?';
+  Widget _buildModernUserCard(Map<String, dynamic> user) {
+    String nombre = user['nombres']?.toString().toUpperCase() ?? 'SIN NOMBRE';
+    String inicial = nombre.isNotEmpty ? nombre[0] : '?';
 
-  String lectura = user['lectura']?.toString().trim() ?? "";
-  bool tieneAcceso = lectura.isNotEmpty && lectura != 'N';
+    String lectura = user['lectura']?.toString().trim() ?? "";
+    bool tieneAcceso = lectura.isNotEmpty && lectura != 'N';
 
-  Set<int> bloques = _parsearBloques(lectura);
+    Set<int> bloques = _parsearBloques(lectura);
 
-  final partesLectura = lectura.split(',').map((e) => e.trim()).toList();
-  final modulos = ['scanner', 'mapa', 'almacen']
-      .where((m) => partesLectura.contains(m))
-      .length;
+    final partesLectura = lectura.split(',').map((e) => e.trim()).toList();
+    final modulos =
+        [
+          'scanner',
+          'mapa',
+          'almacen',
+          'respaldo',
+          'administracion',
+        ].where((m) => partesLectura.contains(m)).length;
 
-  return Container(
-    margin: const EdgeInsets.only(bottom: 18),
-    decoration: BoxDecoration(
-      borderRadius: BorderRadius.circular(24),
-      gradient: const LinearGradient(
-        colors: [Colors.white, Color(0xFFF8FBFF)],
-        begin: Alignment.topLeft,
-        end: Alignment.bottomRight,
-      ),
-      boxShadow: [
-        BoxShadow(
-          color: brandBlue.withOpacity(0.08),
-          blurRadius: 18,
-          offset: const Offset(0, 8),
+    return Container(
+      margin: const EdgeInsets.only(bottom: 18),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(24),
+        gradient: const LinearGradient(
+          colors: [Colors.white, Color(0xFFF8FBFF)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
         ),
-      ],
-      border: Border.all(color: brandBlue.withOpacity(0.08)),
-    ),
-    child: Padding(
-      padding: const EdgeInsets.all(16),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // 🔥 AVATAR
-          Container(
-            width: 58,
-            height: 58,
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                colors: [brandBlue, brandBlue.withOpacity(0.75)],
-              ),
-              shape: BoxShape.circle,
-              boxShadow: [
-                BoxShadow(
-                  color: brandBlue.withOpacity(0.25),
-                  blurRadius: 10,
-                  offset: const Offset(0, 4),
-                ),
-              ],
-            ),
-            child: Center(
-              child: Text(
-                inicial,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontWeight: FontWeight.w900,
-                  fontSize: 22,
-                ),
-              ),
-            ),
+        boxShadow: [
+          BoxShadow(
+            color: brandBlue.withOpacity(0.08),
+            blurRadius: 18,
+            offset: const Offset(0, 8),
           ),
-
-          const SizedBox(width: 15),
-
-          // 🔥 INFORMACIÓN
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  nombre,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
+        ],
+        border: Border.all(color: brandBlue.withOpacity(0.08)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // 🔥 AVATAR
+            Container(
+              width: 58,
+              height: 58,
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [brandBlue, brandBlue.withOpacity(0.75)],
+                ),
+                shape: BoxShape.circle,
+                boxShadow: [
+                  BoxShadow(
+                    color: brandBlue.withOpacity(0.25),
+                    blurRadius: 10,
+                    offset: const Offset(0, 4),
+                  ),
+                ],
+              ),
+              child: Center(
+                child: Text(
+                  inicial,
                   style: const TextStyle(
+                    color: Colors.white,
                     fontWeight: FontWeight.w900,
-                    fontSize: 15,
-                    color: Color(0xFF1F2937),
-                    letterSpacing: 0.3,
+                    fontSize: 22,
                   ),
                 ),
+              ),
+            ),
 
-                const SizedBox(height: 4),
+            const SizedBox(width: 15),
 
-                Row(
-                  children: [
-                    Icon(Icons.badge_outlined, size: 15, color: Colors.grey[600]),
-                    const SizedBox(width: 5),
-                    Text(
-                      user['identificacion'] ?? '',
-                      style: TextStyle(
-                        color: Colors.grey[700],
-                        fontSize: 12,
-                        fontWeight: FontWeight.w500,
-                      ),
+            // 🔥 INFORMACIÓN
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    nombre,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w900,
+                      fontSize: 15,
+                      color: Color(0xFF1F2937),
+                      letterSpacing: 0.3,
                     ),
-                  ],
-                ),
+                  ),
 
-                const SizedBox(height: 10),
+                  const SizedBox(height: 4),
 
-                // 🔥 DOS CHIPS COMPACTOS
-                if (!tieneAcceso)
-                  // Sin acceso
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 10, vertical: 5),
-                    decoration: BoxDecoration(
-                      color: Colors.red.withOpacity(0.10),
-                      borderRadius: BorderRadius.circular(20),
-                      border: Border.all(
-                          color: Colors.red.withOpacity(0.25)),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: const [
-                        Icon(Icons.block_rounded,
-                            size: 12, color: Colors.redAccent),
-                        SizedBox(width: 4),
-                        Text(
-                          "Sin acceso",
-                          style: TextStyle(
-                            fontSize: 11,
-                            fontWeight: FontWeight.w800,
-                            color: Colors.redAccent,
-                          ),
-                        ),
-                      ],
-                    ),
-                  )
-                else
                   Row(
                     children: [
-                      // CHIP BLOQUES
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 8, vertical: 5),
-                        decoration: BoxDecoration(
-                          color: brandBlue.withOpacity(0.10),
-                          borderRadius: BorderRadius.circular(20),
-                          border: Border.all(
-                              color: brandBlue.withOpacity(0.25)),
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(Icons.grid_view_rounded,
-                                size: 12, color: brandBlue),
-                            const SizedBox(width: 4),
-                            Text(
-                              "${bloques.length} bloq.",
-                              style: TextStyle(
-                                fontSize: 11,
-                                fontWeight: FontWeight.w800,
-                                color: brandBlue,
-                              ),
-                            ),
-                          ],
-                        ),
+                      Icon(
+                        Icons.badge_outlined,
+                        size: 15,
+                        color: Colors.grey[600],
                       ),
-
-                      const SizedBox(width: 6),
-
-                      // CHIP MÓDULOS
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 8, vertical: 5),
-                        decoration: BoxDecoration(
-                          color: modulos > 0
-                              ? Colors.teal.withOpacity(0.10)
-                              : Colors.orange.withOpacity(0.10),
-                          borderRadius: BorderRadius.circular(20),
-                          border: Border.all(
-                            color: modulos > 0
-                                ? Colors.teal.withOpacity(0.25)
-                                : Colors.orange.withOpacity(0.25),
-                          ),
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(
-                              Icons.dashboard_customize_rounded,
-                              size: 12,
-                              color: modulos > 0
-                                  ? Colors.teal
-                                  : Colors.orange,
-                            ),
-                            const SizedBox(width: 4),
-                            Text(
-                              "$modulos mód.",
-                              style: TextStyle(
-                                fontSize: 11,
-                                fontWeight: FontWeight.w800,
-                                color: modulos > 0
-                                    ? Colors.teal
-                                    : Colors.orange,
-                              ),
-                            ),
-                          ],
+                      const SizedBox(width: 5),
+                      Text(
+                        user['identificacion'] ?? '',
+                        style: TextStyle(
+                          color: Colors.grey[700],
+                          fontSize: 12,
+                          fontWeight: FontWeight.w500,
                         ),
                       ),
                     ],
                   ),
+
+                  const SizedBox(height: 10),
+
+                  // 🔥 DOS CHIPS COMPACTOS
+                  if (!tieneAcceso)
+                    // Sin acceso
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 5,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Colors.red.withOpacity(0.10),
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(color: Colors.red.withOpacity(0.25)),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: const [
+                          Icon(
+                            Icons.block_rounded,
+                            size: 12,
+                            color: Colors.redAccent,
+                          ),
+                          SizedBox(width: 4),
+                          Text(
+                            "Sin acceso",
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w800,
+                              color: Colors.redAccent,
+                            ),
+                          ),
+                        ],
+                      ),
+                    )
+                  else
+                    Row(
+                      children: [
+                        // CHIP BLOQUES
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 5,
+                          ),
+                          decoration: BoxDecoration(
+                            color: brandBlue.withOpacity(0.10),
+                            borderRadius: BorderRadius.circular(20),
+                            border: Border.all(
+                              color: brandBlue.withOpacity(0.25),
+                            ),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                Icons.grid_view_rounded,
+                                size: 12,
+                                color: brandBlue,
+                              ),
+                              const SizedBox(width: 4),
+                              Text(
+                                "${bloques.length} bloq.",
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w800,
+                                  color: brandBlue,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+
+                        const SizedBox(width: 6),
+
+                        // CHIP MÓDULOS
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 5,
+                          ),
+                          decoration: BoxDecoration(
+                            color:
+                                modulos > 0
+                                    ? Colors.teal.withOpacity(0.10)
+                                    : Colors.orange.withOpacity(0.10),
+                            borderRadius: BorderRadius.circular(20),
+                            border: Border.all(
+                              color:
+                                  modulos > 0
+                                      ? Colors.teal.withOpacity(0.25)
+                                      : Colors.orange.withOpacity(0.25),
+                            ),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                Icons.dashboard_customize_rounded,
+                                size: 12,
+                                color:
+                                    modulos > 0 ? Colors.teal : Colors.orange,
+                              ),
+                              const SizedBox(width: 4),
+                              Text(
+                                "$modulos mód.",
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w800,
+                                  color:
+                                      modulos > 0 ? Colors.teal : Colors.orange,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                ],
+              ),
+            ),
+
+            // 🔥 ACCIONES
+            Column(
+              children: [
+                _buildActionButton(
+                  icon: Icons.grid_on_rounded,
+                  color: brandBlue,
+                  onTap: () => _mostrarDialogoBloques(user),
+                ),
+                const SizedBox(height: 8),
+                _buildActionButton(
+                  icon: Icons.dashboard_customize_rounded,
+                  color: Colors.teal,
+                  onTap: () => _mostrarDialogoModulos(user),
+                ),
+                const SizedBox(height: 8),
+                _buildActionButton(
+                  icon: Icons.edit_rounded,
+                  color: Colors.orange,
+                  onTap: () => _mostrarDialogoEditar(user),
+                ),
+                const SizedBox(height: 8),
+                _buildActionButton(
+                  icon: Icons.delete_rounded,
+                  color: Colors.redAccent,
+                  onTap: () => _confirmarEliminar(user['identificacion']),
+                ),
               ],
             ),
-          ),
-
-          // 🔥 ACCIONES
-          Column(
-            children: [
-              _buildActionButton(
-                icon: Icons.grid_on_rounded,
-                color: brandBlue,
-                onTap: () => _mostrarDialogoBloques(user),
-              ),
-              const SizedBox(height: 8),
-              _buildActionButton(
-                icon: Icons.dashboard_customize_rounded,
-                color: Colors.teal,
-                onTap: () => _mostrarDialogoModulos(user),
-              ),
-              const SizedBox(height: 8),
-              _buildActionButton(
-                icon: Icons.edit_rounded,
-                color: Colors.orange,
-                onTap: () => _mostrarDialogoEditar(user),
-              ),
-              const SizedBox(height: 8),
-              _buildActionButton(
-                icon: Icons.delete_rounded,
-                color: Colors.redAccent,
-                onTap: () => _confirmarEliminar(user['identificacion']),
-              ),
-            ],
-          ),
-        ],
+          ],
+        ),
       ),
-    ),
-  );
-}
+    );
+  }
 
   // 🔥 BOTONES MODERNOS
   Widget _buildActionButton({
@@ -1578,39 +1775,46 @@ Widget _buildModernUserCard(Map<String, dynamic> user) {
 
             // LISTADO
             Expanded(
-              child: isLoading
-                  ? Center(child: CircularProgressIndicator(color: brandBlue))
-                  : usuarios.isEmpty
-                  ? Center(
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(
-                            Icons.people_outline_rounded,
-                            size: 70,
-                            color: Colors.grey[300],
-                          ),
-
-                          const SizedBox(height: 12),
-
-                          const Text(
-                            "No hay registros",
-                            style: TextStyle(
-                              fontSize: 16,
-                              fontWeight: FontWeight.bold,
-                              color: Colors.grey,
+              child:
+                  isLoading
+                      ? Center(
+                        child: CircularProgressIndicator(color: brandBlue),
+                      )
+                      : usuarios.isEmpty && !_esAdministrador
+                      ? Center(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(
+                              Icons.people_outline_rounded,
+                              size: 70,
+                              color: Colors.grey[300],
                             ),
-                          ),
-                        ],
+
+                            const SizedBox(height: 12),
+
+                            const Text(
+                              "No hay registros",
+                              style: TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.grey,
+                              ),
+                            ),
+                          ],
+                        ),
+                      )
+                      : ListView.builder(
+                        padding: const EdgeInsets.fromLTRB(20, 20, 20, 100),
+                        itemCount: usuarios.length + (_esAdministrador ? 1 : 0),
+                        itemBuilder: (context, index) {
+                          if (_esAdministrador && index == 0) {
+                            return _buildPerfilVisitante();
+                          }
+                          final userIndex = index - (_esAdministrador ? 1 : 0);
+                          return _buildModernUserCard(usuarios[userIndex]);
+                        },
                       ),
-                    )
-                  : ListView.builder(
-                      padding: const EdgeInsets.fromLTRB(20, 20, 20, 100),
-                      itemCount: usuarios.length,
-                      itemBuilder: (context, index) {
-                        return _buildModernUserCard(usuarios[index]);
-                      },
-                    ),
             ),
           ],
         ),

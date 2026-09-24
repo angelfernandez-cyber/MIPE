@@ -28,7 +28,9 @@ class _HistorialAseguramientoPageState
   int _paginaActual = 0;
   final int _filasPorPagina = 15;
 
-  DateTime? _fechaSeleccionada;
+  String? _tipoFiltroPeriodo;
+  int? _periodoSeleccionado;
+  int? _anioFiltro;
   bool _isLoading = true;
 
   // Controladores para sincronizar el scroll horizontal
@@ -39,6 +41,16 @@ class _HistorialAseguramientoPageState
   double _exportProgress = 0.0;
   bool _isExporting = false;
   Timer? _refreshTimer;
+
+  bool get _puedeExportar {
+    final user = loginController.loggedInUser.value;
+    final permisos = (user?['lectura']?.toString() ?? '')
+        .toLowerCase()
+        .split(',')
+        .map((e) => e.trim());
+    return user?['admin']?.toString().trim() == 'S' ||
+        permisos.contains('exportar_excel');
+  }
 
   @override
   void initState() {
@@ -81,7 +93,12 @@ class _HistorialAseguramientoPageState
       if (mounted) {
         setState(() {
           _todosLosRegistros = data;
-          _registrosFiltrados = _todosLosRegistros;
+          _registrosFiltrados = _filtrarLista(
+            data,
+            _tipoFiltroPeriodo,
+            _periodoSeleccionado,
+            _anioFiltro,
+          );
           _isLoading = false;
           _paginaActual = 0;
         });
@@ -91,20 +108,434 @@ class _HistorialAseguramientoPageState
     }
   }
 
-  void _filtrarPorFecha(DateTime? fecha) {
+  void _filtrarPorPeriodo(String? tipo, int? periodo, int? anio) {
     setState(() {
-      _fechaSeleccionada = fecha;
+      _tipoFiltroPeriodo = tipo;
+      _periodoSeleccionado = periodo;
+      _anioFiltro = anio;
       _paginaActual = 0;
-      if (fecha == null) {
-        _registrosFiltrados = _todosLosRegistros;
-      } else {
-        String formato =
-            "${fecha.year}-${fecha.month.toString().padLeft(2, '0')}-${fecha.day.toString().padLeft(2, '0')}";
-        _registrosFiltrados = _todosLosRegistros
-            .where((r) => r['fecha'].toString().startsWith(formato))
-            .toList();
-      }
+      _registrosFiltrados = _filtrarLista(
+        _todosLosRegistros,
+        tipo,
+        periodo,
+        anio,
+      );
     });
+  }
+
+  List<dynamic> _filtrarLista(
+    List<dynamic> registros,
+    String? tipo,
+    int? periodo,
+    int? anio,
+  ) {
+    if (tipo == null || periodo == null || anio == null) return registros;
+    if (tipo == 'semana') {
+      return registros.where((registro) {
+        final fechaRegistro = DateTime.tryParse(
+          registro['fecha']?.toString() ?? '',
+        );
+        return fechaRegistro != null &&
+            fechaRegistro.year == anio &&
+            int.tryParse(registro['semana']?.toString() ?? '') == periodo;
+      }).toList();
+    }
+    return registros.where((registro) {
+      final fechaRegistro = DateTime.tryParse(
+        registro['fecha']?.toString() ?? '',
+      );
+      return fechaRegistro != null &&
+          fechaRegistro.year == anio &&
+          fechaRegistro.month == periodo;
+    }).toList();
+  }
+
+  String get _textoFiltroActivo {
+    final periodo = _periodoSeleccionado;
+    final anio = _anioFiltro;
+    if (periodo == null || anio == null || _tipoFiltroPeriodo == null) {
+      return 'Todos los registros';
+    }
+    if (_tipoFiltroPeriodo == 'semana') {
+      return 'Semana $periodo de $anio';
+    }
+    const meses = [
+      'enero',
+      'febrero',
+      'marzo',
+      'abril',
+      'mayo',
+      'junio',
+      'julio',
+      'agosto',
+      'septiembre',
+      'octubre',
+      'noviembre',
+      'diciembre',
+    ];
+    return '${meses[periodo - 1]} de $anio';
+  }
+
+  Future<void> _elegirFiltroPeriodo() async {
+    final tipo = await showDialog<String>(
+      context: context,
+      builder:
+          (context) => Dialog(
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(24),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.all(22),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Filtrar registros',
+                    style: TextStyle(fontSize: 21, fontWeight: FontWeight.w800),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    'Elige cómo quieres organizar el historial.',
+                    style: TextStyle(color: Colors.blueGrey.shade600),
+                  ),
+                  const SizedBox(height: 20),
+                  _opcionFiltroPeriodo(
+                    context,
+                    icon: Icons.calendar_view_week_rounded,
+                    titulo: 'Por semana',
+                    detalle: 'Selecciona el número de semana',
+                    tipo: 'semana',
+                  ),
+                  const SizedBox(height: 10),
+                  _opcionFiltroPeriodo(
+                    context,
+                    icon: Icons.calendar_month_rounded,
+                    titulo: 'Por mes',
+                    detalle: 'Selecciona un mes del año',
+                    tipo: 'mes',
+                  ),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: TextButton(
+                      onPressed: () => Navigator.pop(context),
+                      child: const Text('Cancelar'),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+    );
+    if (tipo == null || !mounted) return;
+
+    final anios =
+        _todosLosRegistros
+            .map(
+              (registro) =>
+                  DateTime.tryParse(registro['fecha']?.toString() ?? ''),
+            )
+            .whereType<DateTime>()
+            .map((fecha) => fecha.year)
+            .toSet();
+    anios.add(DateTime.now().year);
+    if (_anioFiltro != null) anios.add(_anioFiltro!);
+    final aniosOrdenados = anios.toList()..sort((a, b) => b.compareTo(a));
+    const meses = [
+      'Enero',
+      'Febrero',
+      'Marzo',
+      'Abril',
+      'Mayo',
+      'Junio',
+      'Julio',
+      'Agosto',
+      'Septiembre',
+      'Octubre',
+      'Noviembre',
+      'Diciembre',
+    ];
+    int periodoElegido =
+        _tipoFiltroPeriodo == tipo && _periodoSeleccionado != null
+            ? _periodoSeleccionado!
+            : tipo == 'semana'
+            ? 1
+            : DateTime.now().month;
+    int anioElegido = _anioFiltro ?? DateTime.now().year;
+
+    final seleccion = await showDialog<Map<String, int>>(
+      context: context,
+      builder:
+          (context) => StatefulBuilder(
+            builder:
+                (context, setDialogState) => Dialog(
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(26),
+                  ),
+                  clipBehavior: Clip.antiAlias,
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 430),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.fromLTRB(22, 20, 16, 20),
+                          decoration: const BoxDecoration(
+                            gradient: LinearGradient(
+                              colors: [Color(0xFF0789BD), Color(0xFF00658F)],
+                              begin: Alignment.topLeft,
+                              end: Alignment.bottomRight,
+                            ),
+                          ),
+                          child: Row(
+                            children: [
+                              Container(
+                                width: 46,
+                                height: 46,
+                                decoration: BoxDecoration(
+                                  color: Colors.white.withOpacity(0.18),
+                                  borderRadius: BorderRadius.circular(15),
+                                ),
+                                child: Icon(
+                                  tipo == 'semana'
+                                      ? Icons.calendar_view_week_rounded
+                                      : Icons.calendar_month_rounded,
+                                  color: Colors.white,
+                                ),
+                              ),
+                              const SizedBox(width: 13),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      tipo == 'semana'
+                                          ? 'Filtro por semana'
+                                          : 'Filtro por mes',
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 19,
+                                        fontWeight: FontWeight.w800,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 3),
+                                    const Text(
+                                      'Escoge el periodo del historial',
+                                      style: TextStyle(
+                                        color: Colors.white70,
+                                        fontSize: 12,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(22, 22, 22, 18),
+                          child: Column(
+                            children: [
+                              DropdownButtonFormField<int>(
+                                initialValue: periodoElegido,
+                                decoration: InputDecoration(
+                                  labelText:
+                                      tipo == 'semana'
+                                          ? 'Número de semana'
+                                          : 'Mes',
+                                  prefixIcon: Icon(
+                                    tipo == 'semana'
+                                        ? Icons.date_range_rounded
+                                        : Icons.calendar_today_rounded,
+                                  ),
+                                  filled: true,
+                                  fillColor: const Color(0xFFF4F8FA),
+                                  border: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(15),
+                                    borderSide: BorderSide.none,
+                                  ),
+                                ),
+                                items:
+                                    tipo == 'semana'
+                                        ? List.generate(
+                                              52,
+                                              (index) => index + 1,
+                                            )
+                                            .map(
+                                              (semana) => DropdownMenuItem(
+                                                value: semana,
+                                                child: Text('Semana $semana'),
+                                              ),
+                                            )
+                                            .toList()
+                                        : List.generate(
+                                              12,
+                                              (index) => index + 1,
+                                            )
+                                            .map(
+                                              (mes) => DropdownMenuItem(
+                                                value: mes,
+                                                child: Text(meses[mes - 1]),
+                                              ),
+                                            )
+                                            .toList(),
+                                onChanged: (value) {
+                                  if (value != null) {
+                                    setDialogState(
+                                      () => periodoElegido = value,
+                                    );
+                                  }
+                                },
+                              ),
+                              const SizedBox(height: 14),
+                              DropdownButtonFormField<int>(
+                                initialValue: anioElegido,
+                                decoration: InputDecoration(
+                                  labelText: 'Año',
+                                  prefixIcon: const Icon(Icons.event_rounded),
+                                  filled: true,
+                                  fillColor: const Color(0xFFF4F8FA),
+                                  border: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(15),
+                                    borderSide: BorderSide.none,
+                                  ),
+                                ),
+                                items:
+                                    aniosOrdenados
+                                        .map(
+                                          (anio) => DropdownMenuItem(
+                                            value: anio,
+                                            child: Text(anio.toString()),
+                                          ),
+                                        )
+                                        .toList(),
+                                onChanged: (value) {
+                                  if (value != null) {
+                                    setDialogState(() => anioElegido = value);
+                                  }
+                                },
+                              ),
+                              const SizedBox(height: 20),
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: OutlinedButton(
+                                      onPressed: () => Navigator.pop(context),
+                                      style: OutlinedButton.styleFrom(
+                                        padding: const EdgeInsets.symmetric(
+                                          vertical: 14,
+                                        ),
+                                        shape: RoundedRectangleBorder(
+                                          borderRadius: BorderRadius.circular(
+                                            14,
+                                          ),
+                                        ),
+                                      ),
+                                      child: const Text('Cancelar'),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: FilledButton.icon(
+                                      onPressed:
+                                          () => Navigator.pop(context, {
+                                            'periodo': periodoElegido,
+                                            'anio': anioElegido,
+                                          }),
+                                      style: FilledButton.styleFrom(
+                                        backgroundColor: brandBlue,
+                                        padding: const EdgeInsets.symmetric(
+                                          vertical: 14,
+                                        ),
+                                        shape: RoundedRectangleBorder(
+                                          borderRadius: BorderRadius.circular(
+                                            14,
+                                          ),
+                                        ),
+                                      ),
+                                      icon: const Icon(
+                                        Icons.filter_alt_rounded,
+                                        size: 18,
+                                      ),
+                                      label: const Text('Aplicar filtro'),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+          ),
+    );
+    if (seleccion != null && mounted) {
+      _filtrarPorPeriodo(tipo, seleccion['periodo'], seleccion['anio']);
+    }
+  }
+
+  Widget _opcionFiltroPeriodo(
+    BuildContext context, {
+    required IconData icon,
+    required String titulo,
+    required String detalle,
+    required String tipo,
+  }) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(16),
+        onTap: () => Navigator.pop(context, tipo),
+        child: Ink(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: const Color(0xFFF5F9FB),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: brandBlue.withOpacity(0.12)),
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  color: brandBlue.withOpacity(0.11),
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Icon(icon, color: brandBlue),
+              ),
+              const SizedBox(width: 13),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      titulo,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w800,
+                        color: Color(0xFF17324D),
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      detalle,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.blueGrey.shade600,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const Icon(Icons.chevron_right_rounded, color: brandBlue),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   Widget _buildIconoEstado(dynamic valor) {
@@ -131,15 +562,26 @@ class _HistorialAseguramientoPageState
   // -------------------------
   // Exportación con modal (ValueNotifier para que la gráfica se actualice inmediatamente)
   // -------------------------
-  void _exportarExcelConModal() {
+  Future<void> _exportarExcelConModal() async {
+    if (!_puedeExportar) {
+      Get.snackbar('Sin permiso', 'No tienes permiso para exportar a Excel');
+      return;
+    }
+
+    // Trae las firmas recién guardadas o recuperadas desde Supabase antes de
+    // copiar los registros para el Excel. La lista en pantalla puede estar en caché.
+    await _fetchDatos(showLoading: false);
+    if (!mounted) return;
+
     if (_registrosFiltrados.isEmpty) {
       Get.snackbar('Error', 'No hay datos para exportar');
       return;
     }
 
-    final registrosParaExportar = _registrosFiltrados
-        .map((e) => e is Map ? Map<String, dynamic>.from(e) : e)
-        .toList();
+    final registrosParaExportar =
+        _registrosFiltrados
+            .map((e) => e is Map ? Map<String, dynamic>.from(e) : e)
+            .toList();
 
     // Reiniciar estado de la página
     setState(() {
@@ -149,6 +591,10 @@ class _HistorialAseguramientoPageState
 
     // Usamos ValueNotifier para que el diálogo escuche cambios y reconstruya solo su contenido
     final ValueNotifier<double> progressNotifier = ValueNotifier<double>(0.0);
+    final ValueNotifier<bool> cancelRequestedNotifier = ValueNotifier<bool>(
+      false,
+    );
+    final cancelToken = CancellationToken();
 
     // Mostrar diálogo inmediatamente (no dismissible)
     showDialog(
@@ -163,7 +609,7 @@ class _HistorialAseguramientoPageState
               mainAxisSize: MainAxisSize.min,
               children: [
                 // ValueListenableBuilder actualiza la UI del diálogo cuando cambia progressNotifier.value
-                ValueListenableBuilder<double>( 
+                ValueListenableBuilder<double>(
                   valueListenable: progressNotifier,
                   builder: (context, value, _) {
                     final percent = (value * 100).clamp(0.0, 100.0);
@@ -188,7 +634,10 @@ class _HistorialAseguramientoPageState
                                 width: 110,
                                 height: 110,
                                 child: CustomPaint(
-                                  painter: _DonutPainter(progress: value, color: brandBlue),
+                                  painter: _DonutPainter(
+                                    progress: value,
+                                    color: brandBlue,
+                                  ),
                                 ),
                               ),
                               Column(
@@ -205,7 +654,10 @@ class _HistorialAseguramientoPageState
                                   const SizedBox(height: 4),
                                   Text(
                                     value >= 1.0 ? 'Listo' : 'Exportando',
-                                    style: TextStyle(color: Colors.grey[700], fontSize: 12),
+                                    style: TextStyle(
+                                      color: Colors.grey[700],
+                                      fontSize: 12,
+                                    ),
                                   ),
                                 ],
                               ),
@@ -243,7 +695,40 @@ class _HistorialAseguramientoPageState
                     child: const Text('Cerrar'),
                   );
                 }
-                return const SizedBox.shrink();
+                if (value >= 0.94) {
+                  return const TextButton(
+                    onPressed: null,
+                    child: Text('Guardando archivo...'),
+                  );
+                }
+                return ValueListenableBuilder<bool>(
+                  valueListenable: cancelRequestedNotifier,
+                  builder:
+                      (context, cancelRequested, _) => TextButton.icon(
+                        onPressed:
+                            cancelRequested
+                                ? null
+                                : () {
+                                  cancelToken.cancel();
+                                  cancelRequestedNotifier.value = true;
+                                },
+                        icon:
+                            cancelRequested
+                                ? const SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                                : const Icon(Icons.cancel_outlined),
+                        label: Text(
+                          cancelRequested
+                              ? 'Cancelando...'
+                              : 'Cancelar exportación',
+                        ),
+                      ),
+                );
               },
             ),
           ],
@@ -260,6 +745,7 @@ class _HistorialAseguramientoPageState
         final outPath = await AseguramientoExcelService.generarReporte(
           registrosParaExportar,
           nombreArchivo: 'Aseguramiento',
+          cancelToken: cancelToken,
           onProgress: (p) {
             // Actualizamos tanto el estado de la página como el ValueNotifier del diálogo
             if (!mounted) return;
@@ -291,8 +777,13 @@ class _HistorialAseguramientoPageState
 
         // Liberar el notifier
         progressNotifier.dispose();
+        cancelRequestedNotifier.dispose();
 
-        Get.snackbar('Exportado', 'Archivo generado: $outPath', snackPosition: SnackPosition.BOTTOM);
+        Get.snackbar(
+          'Exportado',
+          'Archivo generado: $outPath',
+          snackPosition: SnackPosition.BOTTOM,
+        );
       } catch (e) {
         if (mounted) {
           setState(() {
@@ -312,8 +803,23 @@ class _HistorialAseguramientoPageState
         try {
           progressNotifier.dispose();
         } catch (_) {}
+        try {
+          cancelRequestedNotifier.dispose();
+        } catch (_) {}
 
-        Get.snackbar('Error', 'Fallo al exportar: ${e.toString()}', snackPosition: SnackPosition.BOTTOM);
+        if (cancelToken.isCancelled) {
+          Get.snackbar(
+            'Exportación cancelada',
+            'No se generó el archivo Excel.',
+            snackPosition: SnackPosition.BOTTOM,
+          );
+        } else {
+          Get.snackbar(
+            'Error',
+            'Fallo al exportar: ${e.toString()}',
+            snackPosition: SnackPosition.BOTTOM,
+          );
+        }
       }
     });
   }
@@ -332,16 +838,11 @@ class _HistorialAseguramientoPageState
         flexibleSpace: Container(
           decoration: const BoxDecoration(
             gradient: LinearGradient(
-              colors: [
-                Color(0xFF008DC5),
-                Color(0xFF005F86),
-              ],
+              colors: [Color(0xFF008DC5), Color(0xFF005F86)],
               begin: Alignment.topLeft,
               end: Alignment.bottomRight,
             ),
-            borderRadius: BorderRadius.vertical(
-              bottom: Radius.circular(28),
-            ),
+            borderRadius: BorderRadius.vertical(bottom: Radius.circular(28)),
           ),
         ),
 
@@ -396,26 +897,25 @@ class _HistorialAseguramientoPageState
 
         actions: [
           // BOTÓN NUEVO
-          Container(
-            margin: const EdgeInsets.only(right: 8),
-            decoration: BoxDecoration(
-              color: Colors.white.withOpacity(0.15),
-              borderRadius: BorderRadius.circular(14),
-            ),
-            child: IconButton(
-              icon: const Icon(
-                Icons.add_rounded,
-                color: Colors.white,
+          if (loginController.visitantePuedeInsertar)
+            Container(
+              margin: const EdgeInsets.only(right: 8),
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.15),
+                borderRadius: BorderRadius.circular(14),
               ),
-              onPressed: () => Get.to(
-                () => const AseguramientoPage(),
-              )?.then((value) => _fetchDatos()),
-              tooltip: "Nuevo Registro",
+              child: IconButton(
+                icon: const Icon(Icons.add_rounded, color: Colors.white),
+                onPressed:
+                    () => Get.to(
+                      () => const AseguramientoPage(),
+                    )?.then((value) => _fetchDatos()),
+                tooltip: "Nuevo Registro",
+              ),
             ),
-          ),
 
           // BOTÓN EXCEL (ahora abre modal y muestra progreso)
-          if (_registrosFiltrados.isNotEmpty)
+          if (_registrosFiltrados.isNotEmpty && _puedeExportar)
             Container(
               margin: const EdgeInsets.only(right: 15),
               decoration: BoxDecoration(
@@ -434,35 +934,32 @@ class _HistorialAseguramientoPageState
         ],
       ),
 
-      body: _isLoading
-          ? const Center(
-              child: CircularProgressIndicator(
-                color: brandBlue,
-              ),
-            )
-          : Column(
-              children: [
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(15, 12, 15, 0),
-                  child: _buildFiltroYBanner(),
-                ),
+      body:
+          _isLoading
+              ? const Center(child: CircularProgressIndicator(color: brandBlue))
+              : Column(
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(15, 12, 15, 0),
+                    child: _buildFiltroYBanner(),
+                  ),
 
-                Expanded(
-                  child: _registrosFiltrados.isEmpty
-                      ? _buildSinInformacion()
-                      : Column(
-                          children: [
-                            Expanded(
-                              child: _buildTablaEstructuraFija(),
+                  Expanded(
+                    child:
+                        _registrosFiltrados.isEmpty
+                            ? _buildSinInformacion()
+                            : Column(
+                              children: [
+                                Expanded(child: _buildTablaEstructuraFija()),
+
+                                if (_registrosFiltrados.length >
+                                    _filasPorPagina)
+                                  _buildControlesPaginacion(),
+                              ],
                             ),
-
-                            if (_registrosFiltrados.length > _filasPorPagina)
-                              _buildControlesPaginacion(),
-                          ],
-                        ),
-                ),
-              ],
-            ),
+                  ),
+                ],
+              ),
     );
   }
 
@@ -476,9 +973,9 @@ class _HistorialAseguramientoPageState
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                _fechaSeleccionada == null
-                    ? "Todos los registros"
-                    : "Filtrado: ${_fechaSeleccionada.toString().split(' ')[0]}",
+                _periodoSeleccionado == null
+                    ? _textoFiltroActivo
+                    : 'Filtrado: $_textoFiltroActivo',
                 style: const TextStyle(
                   fontWeight: FontWeight.bold,
                   color: Colors.blueGrey,
@@ -497,41 +994,30 @@ class _HistorialAseguramientoPageState
           ),
           ActionChip(
             elevation: 2,
-            backgroundColor: _fechaSeleccionada == null
-                ? Colors.white
-                : brandBlue.withOpacity(0.1),
+            backgroundColor:
+                _periodoSeleccionado == null
+                    ? Colors.white
+                    : brandBlue.withOpacity(0.1),
             side: const BorderSide(color: brandBlue, width: 1),
             avatar: Icon(
-              _fechaSeleccionada == null
+              _periodoSeleccionado == null
                   ? Icons.calendar_month
                   : Icons.filter_alt_off,
               size: 18,
               color: brandBlue,
             ),
             label: Text(
-              _fechaSeleccionada == null ? "Filtrar Fecha" : "Limpiar",
+              _periodoSeleccionado == null ? 'Filtrar semana / mes' : 'Limpiar',
               style: const TextStyle(
                 color: brandBlue,
                 fontWeight: FontWeight.bold,
               ),
             ),
             onPressed: () async {
-              if (_fechaSeleccionada != null) {
-                _filtrarPorFecha(null);
+              if (_periodoSeleccionado != null) {
+                _filtrarPorPeriodo(null, null, null);
               } else {
-                DateTime? picked = await showDatePicker(
-                  context: context,
-                  initialDate: DateTime.now(),
-                  firstDate: DateTime(2023),
-                  lastDate: DateTime(2030),
-                  builder: (context, child) => Theme(
-                    data: Theme.of(context).copyWith(
-                      colorScheme: const ColorScheme.light(primary: brandBlue),
-                    ),
-                    child: child!,
-                  ),
-                );
-                if (picked != null) _filtrarPorFecha(picked);
+                await _elegirFiltroPeriodo();
               }
             },
           ),
@@ -610,30 +1096,31 @@ class _HistorialAseguramientoPageState
                       dataRowHeight: 60,
                       dividerThickness: 0,
 
-                      columns: _crearColumnas()
-                          .map(
-                            (c) => DataColumn(
-                              label: SizedBox(
-                                width: (c.label as SizedBox).width,
-                              ),
-                            ),
-                          )
-                          .toList(),
+                      columns:
+                          _crearColumnas()
+                              .map(
+                                (c) => DataColumn(
+                                  label: SizedBox(
+                                    width: (c.label as SizedBox).width,
+                                  ),
+                                ),
+                              )
+                              .toList(),
 
                       rows: List.generate(datosPaginados.length, (index) {
                         final item = datosPaginados[index];
 
                         return DataRow(
-                          color: MaterialStateProperty.resolveWith<Color?>(
-                            (states) {
-                              if (states.contains(MaterialState.hovered)) {
-                                return brandBlue.withOpacity(0.12);
-                              }
-                              return index.isEven
-                                  ? Colors.white
-                                  : const Color(0xFFF7FAFC);
-                            },
-                          ),
+                          color: MaterialStateProperty.resolveWith<Color?>((
+                            states,
+                          ) {
+                            if (states.contains(MaterialState.hovered)) {
+                              return brandBlue.withOpacity(0.12);
+                            }
+                            return index.isEven
+                                ? Colors.white
+                                : const Color(0xFFF7FAFC);
+                          }),
                           onSelectChanged: (_) {
                             Get.to(
                               () => AseguramientoPage(
@@ -664,12 +1151,8 @@ class _HistorialAseguramientoPageState
     );
     // Definimos anchos fijos para que coincidan perfectamente header y body
     return [
-      DataColumn(
-        label: SizedBox(width: 45, child: Text('Sem.', style: st)),
-      ),
-      DataColumn(
-        label: SizedBox(width: 85, child: Text('Fecha', style: st)),
-      ),
+      DataColumn(label: SizedBox(width: 45, child: Text('Sem.', style: st))),
+      DataColumn(label: SizedBox(width: 85, child: Text('Fecha', style: st))),
       DataColumn(
         label: SizedBox(width: 140, child: Text('Producto', style: st)),
       ),
@@ -691,42 +1174,24 @@ class _HistorialAseguramientoPageState
       DataColumn(
         label: SizedBox(width: 50, child: Text('Cantidad', style: st)),
       ),
-      DataColumn(
-        label: SizedBox(width: 90, child: Text('Lote', style: st)),
-      ),
-      DataColumn(
-        label: SizedBox(width: 85, child: Text('Vence', style: st)),
-      ),
+      DataColumn(label: SizedBox(width: 90, child: Text('Lote', style: st))),
+      DataColumn(label: SizedBox(width: 85, child: Text('Vence', style: st))),
       DataColumn(
         label: SizedBox(width: 75, child: Text('Etiqueta', style: st)),
       ),
-      DataColumn(
-        label: SizedBox(width: 75, child: Text('Tapa', style: st)),
-      ),
-      DataColumn(
-        label: SizedBox(width: 75, child: Text('Sellos', style: st)),
-      ),
-      DataColumn(
-        label: SizedBox(width: 85, child: Text('Extrac.', style: st)),
-      ),
-      DataColumn(
-        label: SizedBox(width: 60, child: Text('cc/g', style: st)),
-      ),
-      DataColumn(
-        label: SizedBox(width: 60, child: Text('Color', style: st)),
-      ),
-      DataColumn(
-        label: SizedBox(width: 60, child: Text('PH', style: st)),
-      ),
+      DataColumn(label: SizedBox(width: 75, child: Text('Tapa', style: st))),
+      DataColumn(label: SizedBox(width: 75, child: Text('Sellos', style: st))),
+      DataColumn(label: SizedBox(width: 85, child: Text('Extrac.', style: st))),
+      DataColumn(label: SizedBox(width: 60, child: Text('cc/g', style: st))),
+      DataColumn(label: SizedBox(width: 60, child: Text('Color', style: st))),
+      DataColumn(label: SizedBox(width: 60, child: Text('PH', style: st))),
       DataColumn(
         label: SizedBox(width: 60, child: Text('Densidad', style: st)),
       ),
       DataColumn(
         label: SizedBox(width: 60, child: Text('Observa.', style: st)),
       ),
-      DataColumn(
-        label: SizedBox(width: 60, child: Text('Asegura', style: st)),
-      ),
+      DataColumn(label: SizedBox(width: 60, child: Text('Asegura', style: st))),
       DataColumn(
         label: SizedBox(width: 60, child: Text('Autoriza', style: st)),
       ),
@@ -734,7 +1199,11 @@ class _HistorialAseguramientoPageState
   }
 
   List<DataCell> _crearCeldas(dynamic item) {
-    TextStyle cellStyle = const TextStyle(fontSize: 12, color: Colors.black87, letterSpacing: 0.3,);
+    TextStyle cellStyle = const TextStyle(
+      fontSize: 12,
+      color: Colors.black87,
+      letterSpacing: 0.3,
+    );
     return [
       DataCell(
         SizedBox(
@@ -884,10 +1353,7 @@ class _HistorialAseguramientoPageState
       DataCell(
         SizedBox(
           width: 60,
-          child: Text(
-            item['autorizacion']?.toString() ?? '',
-            style: cellStyle,
-          ),
+          child: Text(item['autorizacion']?.toString() ?? '', style: cellStyle),
         ),
       ),
     ];
@@ -907,9 +1373,10 @@ class _HistorialAseguramientoPageState
               shape: const CircleBorder(),
               padding: const EdgeInsets.all(10),
             ),
-            onPressed: _paginaActual > 0
-                ? () => setState(() => _paginaActual--)
-                : null,
+            onPressed:
+                _paginaActual > 0
+                    ? () => setState(() => _paginaActual--)
+                    : null,
             child: const Icon(Icons.chevron_left),
           ),
           const SizedBox(width: 20),
@@ -928,9 +1395,10 @@ class _HistorialAseguramientoPageState
               shape: const CircleBorder(),
               padding: const EdgeInsets.all(10),
             ),
-            onPressed: (_paginaActual + 1) < totalPaginas
-                ? () => setState(() => _paginaActual++)
-                : null,
+            onPressed:
+                (_paginaActual + 1) < totalPaginas
+                    ? () => setState(() => _paginaActual++)
+                    : null,
             child: const Icon(Icons.chevron_right),
           ),
         ],
@@ -955,7 +1423,7 @@ class _HistorialAseguramientoPageState
           ),
           const SizedBox(height: 10),
           TextButton(
-            onPressed: () => _filtrarPorFecha(null),
+            onPressed: () => _filtrarPorPeriodo(null, null, null),
             child: const Text(
               "Limpiar filtros",
               style: TextStyle(color: brandBlue),
@@ -981,23 +1449,31 @@ class _DonutPainter extends CustomPainter {
     final center = rect.center;
     final radius = (size.width - stroke) / 2;
 
-    final basePaint = Paint()
-      ..color = color.withOpacity(0.12)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = stroke
-      ..strokeCap = StrokeCap.round;
+    final basePaint =
+        Paint()
+          ..color = color.withOpacity(0.12)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = stroke
+          ..strokeCap = StrokeCap.round;
 
-    final progressPaint = Paint()
-      ..color = color
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = stroke
-      ..strokeCap = StrokeCap.round;
+    final progressPaint =
+        Paint()
+          ..color = color
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = stroke
+          ..strokeCap = StrokeCap.round;
 
     canvas.drawCircle(center, radius, basePaint);
 
     final startAngle = -3.1415926535897932 / 2;
     final sweepAngle = 2 * 3.1415926535897932 * progress.clamp(0.0, 1.0);
-    canvas.drawArc(Rect.fromCircle(center: center, radius: radius), startAngle, sweepAngle, false, progressPaint);
+    canvas.drawArc(
+      Rect.fromCircle(center: center, radius: radius),
+      startAngle,
+      sweepAngle,
+      false,
+      progressPaint,
+    );
   }
 
   @override

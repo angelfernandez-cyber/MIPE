@@ -10,6 +10,7 @@ import 'login_page.dart';
 import 'home_page.dart';
 import 'formulario_page.dart';
 import 'backup_cleanup_page.dart';
+import 'firma_digital_page.dart';
 
 /* import 'bloques_page.dart'; */
 import 'consulta_page.dart';
@@ -55,6 +56,7 @@ class MyApp extends StatelessWidget {
         /*  GetPage(name: '/bloques', page: () => const BloquesPage()), */
         GetPage(name: '/consultaexcel', page: () => const ConsultarPage()),
         GetPage(name: '/aseguramiento', page: () => const AseguramientoPage()),
+        GetPage(name: '/mi-firma', page: () => const FirmaDigitalPage()),
         GetPage(
           name: '/historialaseguramiento',
           page: () => const HistorialAseguramientoPage(),

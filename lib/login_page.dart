@@ -4,6 +4,7 @@ import 'package:get/get.dart';
 import 'dart:ui';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'login_controller.dart';
+import 'visitante_login_page.dart';
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
@@ -26,27 +27,30 @@ class _LoginPageState extends State<LoginPage> {
   @override
   void initState() {
     super.initState();
-    // Esperamos un poco para que el controlador cargue SharedPreferences
-    Future.delayed(const Duration(milliseconds: 150), () {
-      // Si el controlador ya cargó el usuario recordado, precargamos el campo
-      if (loginController.usuarioRecordado.value.isNotEmpty) {
-        _identificacionController.text = loginController.usuarioRecordado.value;
-      }
-      // Precargar la contraseña solo si el switch "Recordar" está activo
-      // y existe una contraseña guardada en el controlador.
-      try {
-        if (loginController.recordarUsuario.value &&
-            (loginController.passwordRecordado.value?.isNotEmpty ?? false)) {
-          _passwordController.text = loginController.passwordRecordado.value;
-        } else {
-          _passwordController.text = '';
-        }
-      } catch (_) {
-        // Si el controlador no tiene passwordRecordado o hay algún error,
-        // no precargamos la contraseña para evitar fallos.
+    _precargarCredencialesRecordadas();
+  }
+
+  Future<void> _precargarCredencialesRecordadas() async {
+    await loginController.credencialesInicializadas;
+    if (!mounted) return;
+    // Si el controlador ya cargó el usuario recordado, precargamos el campo
+    if (loginController.usuarioRecordado.value.isNotEmpty) {
+      _identificacionController.text = loginController.usuarioRecordado.value;
+    }
+    // Precargar la contraseña solo si el switch "Recordar" está activo
+    // y existe una contraseña guardada en el controlador.
+    try {
+      if (loginController.recordarUsuario.value &&
+          loginController.passwordRecordado.value.isNotEmpty) {
+        _passwordController.text = loginController.passwordRecordado.value;
+      } else {
         _passwordController.text = '';
       }
-    });
+    } catch (_) {
+      // Si el controlador no tiene passwordRecordado o hay algún error,
+      // no precargamos la contraseña para evitar fallos.
+      _passwordController.text = '';
+    }
   }
 
   @override
@@ -285,37 +289,54 @@ class _LoginPageState extends State<LoginPage> {
                                     ),
                                   ),
 
+                                  const SizedBox(height: 10),
+                                  TextButton.icon(
+                                    onPressed:
+                                        () => Get.to(
+                                          () => const VisitanteLoginPage(),
+                                        ),
+                                    icon: const Icon(
+                                      Icons.person_pin_circle_outlined,
+                                    ),
+                                    label: const Text(
+                                      'Ingresar como visitante',
+                                    ),
+                                    style: TextButton.styleFrom(
+                                      foregroundColor: const Color(0xFF168B59),
+                                    ),
+                                  ),
+
                                   // --- ACCESO RÁPIDO BIOMÉTRICO ---
                                   if (!kIsWeb) const SizedBox(height: 20),
                                   if (!kIsWeb)
-                                  IconButton(
-                                    icon: const Icon(
-                                      Icons.fingerprint_rounded,
-                                      size: 50,
+                                    IconButton(
+                                      icon: const Icon(
+                                        Icons.fingerprint_rounded,
+                                        size: 50,
+                                      ),
+                                      color: accentColor,
+                                      tooltip: 'Ingresar con huella',
+                                      onPressed: () async {
+                                        final prefs =
+                                            await SharedPreferences.getInstance();
+                                        final bool biometriaHabilitada =
+                                            prefs.getBool(
+                                              'biometria_habilitada',
+                                            ) ??
+                                            false;
+                                        if (biometriaHabilitada) {
+                                          // Intentamos verificar sesión existente (controlador maneja la biometría)
+                                          loginController
+                                              .verificarSesionExistente();
+                                        } else {
+                                          Get.snackbar(
+                                            'Biometría',
+                                            'Primero inicia sesión con usuario y contraseña para habilitar biometría',
+                                            snackPosition: SnackPosition.BOTTOM,
+                                          );
+                                        }
+                                      },
                                     ),
-                                    color: accentColor,
-                                    tooltip: 'Ingresar con huella',
-                                    onPressed: () async {
-                                      final prefs =
-                                      await SharedPreferences.getInstance();
-                                      final bool biometriaHabilitada =
-                                          prefs.getBool(
-                                            'biometria_habilitada',
-                                          ) ??
-                                          false;
-                                      if (biometriaHabilitada) {
-                                        // Intentamos verificar sesión existente (controlador maneja la biometría)
-                                        loginController
-                                            .verificarSesionExistente();
-                                      } else {
-                                        Get.snackbar(
-                                          'Biometría',
-                                          'Primero inicia sesión con usuario y contraseña para habilitar biometría',
-                                          snackPosition: SnackPosition.BOTTOM,
-                                        );
-                                      }
-                                    },
-                                  ),
                                   if (!kIsWeb)
                                     const Text(
                                       "Toque para usar biometría",

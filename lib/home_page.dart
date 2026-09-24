@@ -3,12 +3,11 @@ import 'package:get/get.dart';
 import 'package:simple_barcode_scanner/simple_barcode_scanner.dart';
 import 'login_controller.dart';
 import 'formulario_page.dart';
-import 'dart:convert';
 import 'dart:async';
-import 'package:http/http.dart' as http;
 import 'package:flutter/services.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'offline_sync_service.dart';
+import 'catalogos_page.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -23,6 +22,136 @@ class _HomePageState extends State<HomePage> {
   final Color darkBlue = const Color(0xFF005F86);
 
   final LoginController loginController = Get.find<LoginController>();
+  Timer? _visitorCodeTimer;
+  String _visitorCode = '······';
+  String _visitorCodeStatus = 'Cargando código';
+  int _visitorCodeSeconds = 0;
+  bool _loadingVisitorCode = false;
+
+  @override
+  void initState() {
+    super.initState();
+    if (_esAdministradorPrincipal()) {
+      _actualizarCodigoVisitante();
+      _visitorCodeTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+        if (!mounted) return;
+        if (_visitorCodeSeconds <= 1) {
+          _actualizarCodigoVisitante();
+        } else {
+          setState(() {
+            _visitorCodeSeconds--;
+            _visitorCodeStatus = 'Cambia en $_visitorCodeSeconds s';
+          });
+        }
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _visitorCodeTimer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _actualizarCodigoVisitante({String? password}) async {
+    if (_loadingVisitorCode || !mounted) return;
+    setState(() => _loadingVisitorCode = true);
+    try {
+      final result = await loginController.obtenerCodigoVisitante(
+        confirmarPassword: password,
+      );
+      if (!mounted) return;
+      setState(() {
+        _visitorCode = result['codigo'].toString();
+        _visitorCodeSeconds = int.tryParse('${result['cambia_en_segundos']}') ?? 60;
+        _visitorCodeStatus = 'Cambia en $_visitorCodeSeconds s';
+      });
+    } catch (e) {
+      if (!mounted) return;
+      final error = e.toString().replaceFirst('Exception: ', '');
+      setState(() {
+        _visitorCode = '······';
+        _visitorCodeSeconds = 60;
+        _visitorCodeStatus = error.contains('Confirma tu contraseña')
+            ? 'Toca para confirmar tu contraseña'
+            : error;
+      });
+    } finally {
+      if (mounted) setState(() => _loadingVisitorCode = false);
+    }
+  }
+
+  Future<void> _confirmarClaveParaCodigo() async {
+    final controller = TextEditingController();
+    final clave = await Get.dialog<String>(
+      AlertDialog(
+        title: const Text('Confirmar administrador'),
+        content: TextField(
+          controller: controller,
+          obscureText: true,
+          autofocus: true,
+          decoration: const InputDecoration(labelText: 'Contraseña actual'),
+        ),
+        actions: [
+          TextButton(onPressed: Get.back, child: const Text('Cancelar')),
+          FilledButton(
+            onPressed: () => Get.back(result: controller.text),
+            child: const Text('Continuar'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (clave != null && clave.isNotEmpty) {
+      await _actualizarCodigoVisitante(password: clave);
+    }
+  }
+
+  Widget _buildVisitorCodeCard() {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 20),
+      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: const Color(0xFF168B59).withOpacity(0.18)),
+        boxShadow: [BoxShadow(color: const Color(0xFF168B59).withOpacity(0.08), blurRadius: 18, offset: const Offset(0, 7))],
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 48,
+            height: 48,
+            decoration: BoxDecoration(color: const Color(0xFF168B59).withOpacity(0.1), borderRadius: BorderRadius.circular(15)),
+            child: const Icon(Icons.key_rounded, color: Color(0xFF168B59)),
+          ),
+          const SizedBox(width: 13),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('CÓDIGO DE VISITANTE', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: Colors.blueGrey.shade600, letterSpacing: 0.7)),
+                const SizedBox(height: 4),
+                Text(_visitorCode, style: const TextStyle(fontSize: 25, fontWeight: FontWeight.w900, color: Color(0xFF17324D), letterSpacing: 4)),
+                Text(_visitorCodeStatus, style: const TextStyle(fontSize: 11, color: Color(0xFF168B59))),
+              ],
+            ),
+          ),
+          IconButton(
+            tooltip: 'Actualizar código',
+            onPressed: _loadingVisitorCode
+                ? null
+                : loginController.passwordEnMemoria == null
+                    ? _confirmarClaveParaCodigo
+                    : _actualizarCodigoVisitante,
+            icon: _loadingVisitorCode
+                ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
+                : const Icon(Icons.refresh_rounded, color: Color(0xFF168B59)),
+          ),
+        ],
+      ),
+    );
+  }
 
   Future<void> _scanBarcode() async {
     var res = await Navigator.push(
@@ -56,6 +185,171 @@ class _HomePageState extends State<HomePage> {
     }
 
     return lectura.split(',').map((e) => e.trim().toLowerCase()).toSet();
+  }
+
+  bool _esAdministradorPrincipal() {
+    return loginController.loggedInUser.value?['admin']?.toString().trim() == 'S';
+  }
+
+  void _editarCuentaAdministrador() {
+    final identificacionCtrl = TextEditingController(
+      text: loginController.loggedInUser.value?['identificacion']?.toString() ?? '',
+    );
+    final passwordCtrl = TextEditingController();
+    bool ocultarPassword = true;
+
+    Get.dialog(
+      StatefulBuilder(
+        builder: (context, setDialogState) => Dialog(
+          backgroundColor: Colors.transparent,
+          insetPadding: const EdgeInsets.symmetric(horizontal: 22, vertical: 28),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 430),
+            child: Container(
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(28),
+                boxShadow: [
+                  BoxShadow(
+                    color: const Color(0xFF15334A).withOpacity(0.22),
+                    blurRadius: 28,
+                    offset: const Offset(0, 14),
+                  ),
+                ],
+              ),
+              clipBehavior: Clip.antiAlias,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.fromLTRB(22, 22, 18, 22),
+                    decoration: const BoxDecoration(
+                      gradient: LinearGradient(
+                        colors: [Color(0xFF159A68), Color(0xFF08734E)],
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                      ),
+                    ),
+                    child: Row(
+                      children: [
+                        Container(
+                          width: 52,
+                          height: 52,
+                          decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(0.18),
+                            borderRadius: BorderRadius.circular(17),
+                          ),
+                          child: const Icon(Icons.manage_accounts_rounded, color: Colors.white, size: 30),
+                        ),
+                        const SizedBox(width: 14),
+                        const Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text('Mi cuenta', style: TextStyle(color: Colors.white, fontSize: 21, fontWeight: FontWeight.w800)),
+                              SizedBox(height: 3),
+                              Text('Administrador', style: TextStyle(color: Colors.white70, fontSize: 13)),
+                            ],
+                          ),
+                        ),
+                        IconButton(
+                          onPressed: Get.back,
+                          icon: const Icon(Icons.close_rounded, color: Colors.white70),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(22, 20, 22, 22),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Actualiza tus datos de acceso.', style: TextStyle(color: Colors.blueGrey.shade700, fontSize: 14)),
+                        const SizedBox(height: 18),
+                        TextField(
+                          controller: identificacionCtrl,
+                          textInputAction: TextInputAction.next,
+                          decoration: InputDecoration(
+                            labelText: 'Usuario',
+                            prefixIcon: const Icon(Icons.person_outline_rounded),
+                            filled: true,
+                            fillColor: const Color(0xFFF4F7F8),
+                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(15), borderSide: BorderSide.none),
+                          ),
+                        ),
+                        const SizedBox(height: 13),
+                        TextField(
+                          controller: passwordCtrl,
+                          obscureText: ocultarPassword,
+                          decoration: InputDecoration(
+                            labelText: 'Nueva contraseña',
+                            prefixIcon: const Icon(Icons.lock_outline_rounded),
+                            suffixIcon: IconButton(
+                              onPressed: () => setDialogState(() => ocultarPassword = !ocultarPassword),
+                              icon: Icon(ocultarPassword ? Icons.visibility_off_rounded : Icons.visibility_rounded),
+                            ),
+                            filled: true,
+                            fillColor: const Color(0xFFF4F7F8),
+                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(15), borderSide: BorderSide.none),
+                          ),
+                        ),
+                        const SizedBox(height: 22),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: OutlinedButton(
+                                onPressed: Get.back,
+                                style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 14), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14))),
+                                child: const Text('Cancelar'),
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: FilledButton.icon(
+                                onPressed: () async {
+                                  final nuevoUsuario = identificacionCtrl.text.trim();
+                                  final nuevaPassword = passwordCtrl.text;
+                                  if (nuevoUsuario.isEmpty || nuevaPassword.isEmpty) {
+                                    Get.snackbar('Datos incompletos', 'Escribe el usuario y la nueva contraseña.');
+                                    return;
+                                  }
+                                  final ok = await loginController.actualizarCuentaAdministrador(
+                                    nuevaIdentificacion: nuevoUsuario,
+                                    nuevaPassword: nuevaPassword,
+                                  );
+                                  if (ok) {
+                                    Get.back();
+                                    Get.snackbar('Cuenta actualizada', 'Tus datos de acceso fueron cambiados.');
+                                  } else {
+                                    Get.snackbar('No se pudo guardar', 'Revisa que el usuario no esté en uso e intenta de nuevo.');
+                                  }
+                                },
+                                icon: const Icon(Icons.check_rounded),
+                                label: const Text('Guardar'),
+                                style: FilledButton.styleFrom(
+                                  backgroundColor: const Color(0xFF12885C),
+                                  padding: const EdgeInsets.symmetric(vertical: 14),
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    ).whenComplete(() {
+      identificacionCtrl.dispose();
+      passwordCtrl.dispose();
+    });
   }
 
   Future<void> _procesarEntradaBloque(String bloque) async {
@@ -185,6 +479,7 @@ class _HomePageState extends State<HomePage> {
                 padding: const EdgeInsets.fromLTRB(20, 30, 20, 20),
                 child: Column(
                   children: [
+                    if (_esAdministradorPrincipal()) _buildVisitorCodeCard(),
                     if (lectura.contains("scanner"))
                       _buildActionCard(
                         title: "ESCÁNER QR",
@@ -214,8 +509,34 @@ class _HomePageState extends State<HomePage> {
                         ],
                         onTap: () => Get.toNamed('/historialaseguramiento'),
                       ),
-                    if (loginController.loggedInUser.value?['admin'] ==
-                        'S') ...[
+                    if (lectura.contains('almacen') && !loginController.esVisitante) ...[
+                      const SizedBox(height: 14),
+                      _buildActionCard(
+                        title: 'MI FIRMA',
+                        subtitle: 'Registrar o actualizar mi firma',
+                        icon: Icons.draw_rounded,
+                        gradient: [
+                          const Color(0xFF008DC5),
+                          const Color(0xFF005F86),
+                        ],
+                        onTap: () => Get.toNamed('/mi-firma'),
+                      ),
+                    ],
+                    if (_esAdministradorPrincipal()) ...[
+                      const SizedBox(height: 20),
+                      _buildActionCard(
+                        title: "GESTIÓN DE LISTAS",
+                        subtitle: "Opciones de formularios desplegables",
+                        icon: Icons.list_alt_rounded,
+                        gradient: [
+                          const Color(0xFF008DC5),
+                          const Color(0xFF005F86),
+                        ],
+                        onTap: () => Get.to(() => const CatalogosPage()),
+                      ),
+                    ],
+                    if (_esAdministradorPrincipal() ||
+                      lectura.contains('administracion')) ...[
                       const SizedBox(height: 20),
                       _buildActionCard(
                         title: "ADMINISTRACIÓN",
@@ -227,10 +548,13 @@ class _HomePageState extends State<HomePage> {
                         ],
                         onTap: () => Get.toNamed('/gestusu'),
                       ),
+                    ],
+                    if (_esAdministradorPrincipal() ||
+                        lectura.contains('respaldo')) ...[
                       const SizedBox(height: 20),
                       _buildActionCard(
                         title: "RESPALDO Y LIMPIEZA",
-                        subtitle: "Copia segura antes de borrar información",
+                        subtitle: "Borrar y respaldar datos",
                         icon: Icons.backup_rounded,
                         gradient: [const Color(0xFF8B1E2D), const Color(0xFF5B111C)],
                         onTap: () => Get.toNamed('/respaldo-limpieza'),
@@ -246,11 +570,38 @@ class _HomePageState extends State<HomePage> {
           ],
             ),
           ),
-          const Positioned(
-            left: 16,
+          if (_esAdministradorPrincipal())
+            Positioned(
+              left: 16,
+              bottom: 18,
+              child: Tooltip(
+                message: 'Mi cuenta del administrador',
+                child: Material(
+                  color: Colors.white,
+                  elevation: 12,
+                  shadowColor: const Color(0xFF183B56).withOpacity(0.25),
+                  borderRadius: BorderRadius.circular(18),
+                  child: InkWell(
+                    onTap: _editarCuentaAdministrador,
+                    borderRadius: BorderRadius.circular(18),
+                    child: Container(
+                      width: 58,
+                      height: 58,
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(18),
+                        border: Border.all(color: const Color(0xFF168B59).withOpacity(0.28)),
+                      ),
+                      child: const Icon(Icons.manage_accounts_rounded, color: Color(0xFF168B59), size: 28),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          Positioned(
+            left: _esAdministradorPrincipal() ? 86 : 16,
             right: 16,
             bottom: 18,
-            child: _OfflineSyncPanel(),
+            child: const _OfflineSyncPanel(),
           ),
         ],
       ),

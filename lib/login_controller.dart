@@ -9,6 +9,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:local_auth_android/local_auth_android.dart';
 import 'dart:async';
 import 'offline_sync_service.dart';
+import 'visitante_service.dart';
 
 class LoginController extends GetxController {
   var isLoading = false.obs;
@@ -22,7 +23,21 @@ class LoginController extends GetxController {
 
   final LocalAuthentication _auth = LocalAuthentication();
   final FlutterSecureStorage _secureStorage = const FlutterSecureStorage();
+  bool _autenticacionBiometricaEnCurso = false;
   Timer? _offlineSyncTimer;
+  Timer? _visitorSessionTimer;
+  String? _passwordEnMemoria;
+  final Completer<void> _credencialesInicializadas = Completer<void>();
+  static const String _visitorPreviousUserKey = 'usuario_anterior_visitante';
+  static const String _visitorSessionActiveKey = 'visitante_sesion_activa';
+
+  Future<void> get credencialesInicializadas =>
+      _credencialesInicializadas.future;
+
+  String? get passwordEnMemoria => _passwordEnMemoria;
+  bool get esVisitante => loggedInUser.value?['visitante'] == true;
+  bool get visitantePuedeInsertar =>
+      !esVisitante || loggedInUser.value?['puede_insertar'] == true;
 
   // Ajusta tu URL y apiKey
   final String supabaseUrl = 'https://dakdyrgfwimwytotkzca.supabase.co';
@@ -33,14 +48,18 @@ class LoginController extends GetxController {
   void onInit() {
     super.onInit();
     _offlineSyncTimer = Timer.periodic(const Duration(seconds: 10), (_) {
-      OfflineSyncService.syncPending(
-        supabaseUrl: supabaseUrl,
-        apiKey: apiKey,
-      );
+      OfflineSyncService.syncPending(supabaseUrl: supabaseUrl, apiKey: apiKey);
     });
     WidgetsBinding.instance.addPostFrameCallback((_) async {
-      await _handleFreshInstallCleanup();
-      await cargarUsuarioRecordado();
+      try {
+        await _handleFreshInstallCleanup();
+        await _restaurarSesionInterrumpidaVisitante();
+        await cargarUsuarioRecordado();
+      } finally {
+        if (!_credencialesInicializadas.isCompleted) {
+          _credencialesInicializadas.complete();
+        }
+      }
       verificarSesionExistente();
     });
   }
@@ -101,22 +120,33 @@ class LoginController extends GetxController {
       final bool biometriaHabilitada =
           prefs.getBool('biometria_habilitada') ?? false;
 
-      if (usuarioGuardado != null) {
+      if (usuarioGuardado == null) {
+        loggedInUser.value = null;
+        message.value =
+            'Inicia sesión con tu usuario para habilitar la huella.';
+        return;
+      }
+
+      if (usuarioGuardado.isNotEmpty) {
+        final usuarioPersistido = json.decode(usuarioGuardado);
         // En PC entramos directo (sin biometría)
         if (Platform.isWindows || Platform.isMacOS || Platform.isLinux) {
-          loggedInUser.value = json.decode(usuarioGuardado);
+          loggedInUser.value = usuarioPersistido;
+          _passwordEnMemoria =
+              await _secureStorage.read(key: 'password_recordado') ??
+              prefs.getString('password_recordado_fallback');
           Get.offAllNamed('/home');
           return;
         }
 
         // En móvil, solo intentamos biometría si el flag está habilitado
         if (biometriaHabilitada) {
-          autenticarBiometrico(json.decode(usuarioGuardado));
+          await autenticarBiometrico(usuarioPersistido);
         } else {
           loggedInUser.value = null;
+          message.value =
+              'La huella no está habilitada. Inicia sesión primero.';
         }
-      } else {
-        loggedInUser.value = null;
       }
     } catch (e, st) {
       message.value = 'Error verificar sesión: ${e.toString()}';
@@ -124,10 +154,26 @@ class LoginController extends GetxController {
     }
   }
 
+  Future<void> _restaurarSesionInterrumpidaVisitante() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (!(prefs.getBool(_visitorSessionActiveKey) ?? false)) return;
+
+    final usuarioAnterior = prefs.getString(_visitorPreviousUserKey);
+    if (usuarioAnterior == null) {
+      await prefs.remove('user_data');
+    } else {
+      await prefs.setString('user_data', usuarioAnterior);
+    }
+    await prefs.remove(_visitorPreviousUserKey);
+    await prefs.remove(_visitorSessionActiveKey);
+  }
+
   // ─────────────────────────────────────────────
   // AUTENTICACIÓN BIOMÉTRICA
   // ─────────────────────────────────────────────
   Future<void> autenticarBiometrico(Map<String, dynamic> datos) async {
+    if (_autenticacionBiometricaEnCurso) return;
+    _autenticacionBiometricaEnCurso = true;
     try {
       bool dispositivoSoportado = await _auth.isDeviceSupported();
       if (!dispositivoSoportado) {
@@ -158,6 +204,14 @@ class LoginController extends GetxController {
 
       if (exito) {
         loggedInUser.value = datos;
+        _passwordEnMemoria =
+            await _secureStorage.read(key: 'password_recordado') ??
+            (await SharedPreferences.getInstance()).getString(
+              'password_recordado_fallback',
+            );
+        // El plugin termina de cerrar el diálogo biométrico de Android al
+        // completar authenticate; deja que Flutter procese ese frame primero.
+        await WidgetsBinding.instance.endOfFrame;
         Get.offAllNamed('/home');
       } else {
         message.value = "Autenticación requerida";
@@ -165,6 +219,8 @@ class LoginController extends GetxController {
     } catch (e, st) {
       message.value = "Error biométrico: ${e.toString()}";
       debugPrint('autenticarBiometrico error: $e\n$st');
+    } finally {
+      _autenticacionBiometricaEnCurso = false;
     }
   }
 
@@ -172,6 +228,7 @@ class LoginController extends GetxController {
   // LOGIN NORMAL
   // ─────────────────────────────────────────────
   Future<void> login(String identificacion, String password) async {
+    await credencialesInicializadas;
     if (identificacion.isEmpty || password.isEmpty) {
       message.value = 'Ingrese datos';
       return;
@@ -207,6 +264,7 @@ class LoginController extends GetxController {
           };
 
           loggedInUser.value = userMap;
+          _passwordEnMemoria = password;
 
           final prefs = await SharedPreferences.getInstance();
           await prefs.setString('user_data', json.encode(userMap));
@@ -237,14 +295,220 @@ class LoginController extends GetxController {
   // LOGOUT / BORRADO
   // ─────────────────────────────────────────────
   Future<void> logout({bool limpiarBiometria = false}) async {
+    final eraVisitante = esVisitante;
+    _visitorSessionTimer?.cancel();
+    _visitorSessionTimer = null;
+    _passwordEnMemoria = null;
     loggedInUser.value = null;
     message.value = "Sesión cerrada";
+    final prefs = await SharedPreferences.getInstance();
     if (limpiarBiometria) {
-      final prefs = await SharedPreferences.getInstance();
       await prefs.setBool('biometria_habilitada', false);
       await prefs.remove('user_data');
+      await prefs.remove(_visitorPreviousUserKey);
+      await prefs.remove(_visitorSessionActiveKey);
+    } else if (eraVisitante) {
+      final usuarioAnterior = prefs.getString(_visitorPreviousUserKey);
+      if (usuarioAnterior == null) {
+        await prefs.remove('user_data');
+      } else {
+        await prefs.setString('user_data', usuarioAnterior);
+      }
+      await prefs.remove(_visitorPreviousUserKey);
+      await prefs.remove(_visitorSessionActiveKey);
     }
     Get.offAllNamed('/login');
+  }
+
+  Future<bool> iniciarSesionVisitante(String codigo) async {
+    if (codigo.trim().length != 6) {
+      message.value = 'El código debe tener 6 dígitos.';
+      return false;
+    }
+    try {
+      isLoading.value = true;
+      final visitante = await VisitanteService.validarCodigo(
+        supabaseUrl: supabaseUrl,
+        apiKey: apiKey,
+        codigo: codigo.trim(),
+      );
+      // La configuración administrativa actual prevalece sobre una sesión
+      // creada antes de que se cambiaran los permisos del visitante.
+      Map<String, dynamic> configuracion = const {};
+      try {
+        configuracion = await VisitanteService.obtenerConfiguracion(
+          supabaseUrl: supabaseUrl,
+          apiKey: apiKey,
+        );
+      } catch (_) {
+        // Si falla la segunda consulta, se conservan los permisos del RPC
+        // que validó el código.
+      }
+      bool permiso(String clave) {
+        final valor =
+            configuracion.containsKey(clave)
+                ? configuracion[clave]
+                : visitante[clave];
+        return valor == true || valor?.toString().toLowerCase() == 'true';
+      }
+
+      final puedeInsertar = permiso('puede_insertar');
+      final puedeExportar = permiso('puede_exportar');
+      final puedeVerAspersiones = permiso('puede_ver_aspersiones');
+      final modulos =
+          (visitante['lectura']?.toString() ?? '')
+              .split(',')
+              .map((modulo) => modulo.trim())
+              .where((modulo) => modulo.isNotEmpty)
+              .toSet();
+      if (puedeInsertar) {
+        modulos.add('scanner');
+      } else {
+        modulos.remove('scanner');
+      }
+      if (puedeExportar) {
+        modulos.add('exportar_excel');
+      } else {
+        modulos.remove('exportar_excel');
+      }
+      if (puedeVerAspersiones) {
+        modulos.add('ver_aspersiones');
+      } else {
+        modulos.remove('ver_aspersiones');
+      }
+      visitante['lectura'] = modulos.join(',');
+      visitante['puede_insertar'] = puedeInsertar;
+      visitante['puede_exportar'] = puedeExportar;
+      visitante['visitante'] = true;
+      loggedInUser.value = visitante;
+      _passwordEnMemoria = null;
+      final expiracion =
+          DateTime.tryParse(visitante['expira_en']?.toString() ?? '') ??
+          DateTime.now().add(const Duration(hours: 5));
+      _visitorSessionTimer?.cancel();
+      _visitorSessionTimer = Timer(
+        expiracion.difference(DateTime.now()).isNegative
+            ? Duration.zero
+            : expiracion.difference(DateTime.now()),
+        () => logout(),
+      );
+      final prefs = await SharedPreferences.getInstance();
+      final usuarioAnterior = prefs.getString('user_data');
+      if (usuarioAnterior == null) {
+        await prefs.remove(_visitorPreviousUserKey);
+      } else {
+        await prefs.setString(_visitorPreviousUserKey, usuarioAnterior);
+      }
+      await prefs.setBool(_visitorSessionActiveKey, true);
+      await prefs.remove('user_data');
+      return true;
+    } catch (e) {
+      message.value = e.toString().replaceFirst('Exception: ', '');
+      return false;
+    } finally {
+      isLoading.value = false;
+    }
+  }
+
+  Future<Map<String, dynamic>> obtenerCodigoVisitante({
+    String? confirmarPassword,
+  }) async {
+    final usuario = loggedInUser.value;
+    if (usuario?['admin']?.toString().trim() != 'S') {
+      throw Exception('Solo el administrador puede consultar el código.');
+    }
+    final password = confirmarPassword ?? _passwordEnMemoria;
+    if (password == null || password.isEmpty) {
+      throw Exception(
+        'Confirma tu contraseña de administrador para mostrar el código.',
+      );
+    }
+    final result = await VisitanteService.generarCodigo(
+      supabaseUrl: supabaseUrl,
+      apiKey: apiKey,
+      identificacion: usuario!['identificacion'].toString(),
+      password: password,
+    );
+    _passwordEnMemoria = password;
+    return result;
+  }
+
+  Future<void> guardarConfiguracionVisitantes({
+    required bool habilitado,
+    required bool puedeInsertar,
+    required bool puedeExportar,
+    required bool puedeVerAspersiones,
+    String? confirmarPassword,
+  }) async {
+    final usuario = loggedInUser.value;
+    final password = confirmarPassword ?? _passwordEnMemoria;
+    if (usuario?['admin']?.toString().trim() != 'S' ||
+        password == null ||
+        password.isEmpty) {
+      throw Exception('Confirma la contraseña del administrador para guardar.');
+    }
+    await VisitanteService.configurar(
+      supabaseUrl: supabaseUrl,
+      apiKey: apiKey,
+      identificacion: usuario!['identificacion'].toString(),
+      password: password,
+      habilitado: habilitado,
+      puedeInsertar: puedeInsertar,
+      puedeExportar: puedeExportar,
+      puedeVerAspersiones: puedeVerAspersiones,
+    );
+    _passwordEnMemoria = password;
+  }
+
+  Future<bool> actualizarCuentaAdministrador({
+    required String nuevaIdentificacion,
+    required String nuevaPassword,
+  }) async {
+    final actual = loggedInUser.value;
+    if (actual == null || actual['admin']?.toString().trim() != 'S') {
+      message.value = 'Solo un administrador puede cambiar esta cuenta';
+      return false;
+    }
+
+    try {
+      final identificacionActual = actual['identificacion'].toString();
+      final url = Uri.parse(
+        '$supabaseUrl/rest/v1/persona?identificacion=eq.$identificacionActual&admin=eq.S',
+      );
+      final response = await http.patch(
+        url,
+        headers: {
+          'apikey': apiKey,
+          'Authorization': 'Bearer $apiKey',
+          'Content-Type': 'application/json',
+          'Prefer': 'return=minimal',
+        },
+        body: jsonEncode({
+          'identificacion': nuevaIdentificacion.trim(),
+          'password': nuevaPassword,
+        }),
+      );
+      if (response.statusCode != 200 && response.statusCode != 204) {
+        return false;
+      }
+
+      final actualizado = Map<String, dynamic>.from(actual)
+        ..['identificacion'] = nuevaIdentificacion.trim();
+      _passwordEnMemoria = nuevaPassword;
+      loggedInUser.value = actualizado;
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('user_data', json.encode(actualizado));
+      if (recordarUsuario.value) {
+        await guardarUsuarioRecordado(
+          nuevaIdentificacion.trim(),
+          nuevaPassword,
+        );
+      }
+      return true;
+    } catch (e, st) {
+      debugPrint('Error al actualizar la cuenta del administrador: $e\n$st');
+      return false;
+    }
   }
 
   Future<void> borrarRastroTotal() async {
@@ -260,7 +524,7 @@ class LoginController extends GetxController {
     }
     await prefs.remove('password_recordado_fallback');
     await prefs.remove('password_recordado');
-    logout();
+    logout(limpiarBiometria: true);
   }
 
   // ─────────────────────────────────────────────
@@ -273,13 +537,16 @@ class LoginController extends GetxController {
       final prefs = await SharedPreferences.getInstance();
       recordarUsuario.value = prefs.getBool('recordar_usuario') ?? false;
       usuarioRecordado.value = prefs.getString('usuario_recordado') ?? '';
-      final storedPassword = await _secureStorage.read(
-        key: 'password_recordado',
-      );
+      String? storedPassword;
+      try {
+        storedPassword = await _secureStorage.read(key: 'password_recordado');
+      } catch (e) {
+        // Si el almacén seguro no está disponible, usa el fallback guardado.
+        debugPrint('No se pudo leer password_recordado en secure storage: $e');
+      }
       if (storedPassword != null && storedPassword.isNotEmpty) {
         passwordRecordado.value = storedPassword;
       } else {
-        // fallback inseguro si secure storage no funciona
         passwordRecordado.value =
             prefs.getString('password_recordado_fallback') ?? '';
       }

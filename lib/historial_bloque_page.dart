@@ -40,6 +40,19 @@ class _HistorialBloquePageState extends State<HistorialBloquePage> {
   bool _isExporting = false;
   Timer? _refreshTimer;
 
+  bool get _puedeExportar {
+    final user = Get.find<LoginController>().loggedInUser.value;
+    final permisos = (user?['lectura']?.toString() ?? '')
+        .toLowerCase()
+        .split(',')
+        .map((e) => e.trim());
+    return user?['admin']?.toString().trim() == 'S' ||
+        permisos.contains('exportar_excel');
+  }
+
+  bool get _puedeRegistrar =>
+      Get.find<LoginController>().visitantePuedeInsertar;
+
   @override
   void initState() {
     super.initState();
@@ -98,12 +111,14 @@ class _HistorialBloquePageState extends State<HistorialBloquePage> {
         final decoded = jsonDecode(productoField);
         if (decoded is List) {
           return List<Map<String, dynamic>>.from(
-              decoded.map((e) => Map<String, dynamic>.from(e)));
+            decoded.map((e) => Map<String, dynamic>.from(e)),
+          );
         }
         return [];
       } else if (productoField is List) {
         return List<Map<String, dynamic>>.from(
-            productoField.map((e) => Map<String, dynamic>.from(e)));
+          productoField.map((e) => Map<String, dynamic>.from(e)),
+        );
       } else {
         return [];
       }
@@ -169,20 +184,26 @@ class _HistorialBloquePageState extends State<HistorialBloquePage> {
       _registrosAgrupados[tag]!.add(reg);
     }
 
-    _listaMeses = _registrosAgrupados.keys.toList()
-      ..sort((a, b) {
-        final fechaA = _registrosAgrupados[a]!
-            .map(_fechaDelRegistro)
-            .whereType<DateTime>()
-            .fold<DateTime?>(null, (prev, fecha) =>
-                prev == null || fecha.isAfter(prev) ? fecha : prev);
-        final fechaB = _registrosAgrupados[b]!
-            .map(_fechaDelRegistro)
-            .whereType<DateTime>()
-            .fold<DateTime?>(null, (prev, fecha) =>
-                prev == null || fecha.isAfter(prev) ? fecha : prev);
-        return (fechaB ?? DateTime(1900)).compareTo(fechaA ?? DateTime(1900));
-      });
+    _listaMeses =
+        _registrosAgrupados.keys.toList()..sort((a, b) {
+          final fechaA = _registrosAgrupados[a]!
+              .map(_fechaDelRegistro)
+              .whereType<DateTime>()
+              .fold<DateTime?>(
+                null,
+                (prev, fecha) =>
+                    prev == null || fecha.isAfter(prev) ? fecha : prev,
+              );
+          final fechaB = _registrosAgrupados[b]!
+              .map(_fechaDelRegistro)
+              .whereType<DateTime>()
+              .fold<DateTime?>(
+                null,
+                (prev, fecha) =>
+                    prev == null || fecha.isAfter(prev) ? fecha : prev,
+              );
+          return (fechaB ?? DateTime(1900)).compareTo(fechaA ?? DateTime(1900));
+        });
 
     if ((_mesSeleccionado == null ||
             !_registrosAgrupados.containsKey(_mesSeleccionado)) &&
@@ -216,18 +237,20 @@ class _HistorialBloquePageState extends State<HistorialBloquePage> {
   /// Devuelve una lista de entradas ordenadas de la semana más reciente
   /// a la más antigua. La clave es el lunes de cada semana.
   List<MapEntry<DateTime, List<dynamic>>> _agruparPorSemana(
-      List<dynamic> registros) {
+    List<dynamic> registros,
+  ) {
     final Map<DateTime, List<dynamic>> mapa = {};
 
     for (final reg in registros) {
-        final fecha = _fechaDelRegistro(reg);
-        if (fecha == null) continue;
+      final fecha = _fechaDelRegistro(reg);
+      if (fecha == null) continue;
       final inicio = _inicioDeSemana(fecha);
       mapa.putIfAbsent(inicio, () => []).add(reg);
     }
 
-    final entradas = mapa.entries.toList()
-      ..sort((a, b) => b.key.compareTo(a.key)); // más reciente primero
+    final entradas =
+        mapa.entries.toList()
+          ..sort((a, b) => b.key.compareTo(a.key)); // más reciente primero
     return entradas;
   }
 
@@ -265,9 +288,14 @@ class _HistorialBloquePageState extends State<HistorialBloquePage> {
   // Exportación con modal
   // -------------------------
   void _exportarSemana() async {
+    if (!_puedeExportar) {
+      Get.snackbar('Sin permiso', 'No tienes permiso para exportar a Excel');
+      return;
+    }
     if (_mesSeleccionado == null) return;
 
-    List<dynamic> registrosExportar = _registrosAgrupados[_mesSeleccionado] ?? [];
+    List<dynamic> registrosExportar =
+        _registrosAgrupados[_mesSeleccionado] ?? [];
 
     if (registrosExportar.isEmpty) {
       Get.snackbar('Error', 'No hay datos para exportar en este mes');
@@ -288,46 +316,48 @@ class _HistorialBloquePageState extends State<HistorialBloquePage> {
       context: context,
       barrierDismissible: false,
       builder: (context) {
-        return StatefulBuilder(builder: (context, setStateDialog) {
-          dialogSetState = setStateDialog;
-          return AlertDialog(
-            title: const Text('Exportando mes'),
-            content: SizedBox(
-              width: double.maxFinite,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  ExportProgressDonut(
-                    progress: _exportProgress,
-                    size: 110,
-                    primaryColor: brandBlue,
-                    backgroundColor: const Color(0xFFE9F3F8),
-                  ),
-                  const SizedBox(height: 12),
-                  LinearProgressIndicator(
-                    value: _exportProgress,
-                    color: brandBlue,
-                    backgroundColor: Colors.grey[200],
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    '${(_exportProgress * 100).toStringAsFixed((_exportProgress * 100) >= 10 ? 0 : 1)}%',
-                    style: TextStyle(color: Colors.grey[700]),
-                  ),
-                ],
-              ),
-            ),
-            actions: [
-              if (!_isExporting)
-                TextButton(
-                  onPressed: () {
-                    Navigator.of(context).pop();
-                  },
-                  child: const Text('Cerrar'),
+        return StatefulBuilder(
+          builder: (context, setStateDialog) {
+            dialogSetState = setStateDialog;
+            return AlertDialog(
+              title: const Text('Exportando mes'),
+              content: SizedBox(
+                width: double.maxFinite,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    ExportProgressDonut(
+                      progress: _exportProgress,
+                      size: 110,
+                      primaryColor: brandBlue,
+                      backgroundColor: const Color(0xFFE9F3F8),
+                    ),
+                    const SizedBox(height: 12),
+                    LinearProgressIndicator(
+                      value: _exportProgress,
+                      color: brandBlue,
+                      backgroundColor: Colors.grey[200],
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      '${(_exportProgress * 100).toStringAsFixed((_exportProgress * 100) >= 10 ? 0 : 1)}%',
+                      style: TextStyle(color: Colors.grey[700]),
+                    ),
+                  ],
                 ),
-            ],
-          );
-        });
+              ),
+              actions: [
+                if (!_isExporting)
+                  TextButton(
+                    onPressed: () {
+                      Navigator.of(context).pop();
+                    },
+                    child: const Text('Cerrar'),
+                  ),
+              ],
+            );
+          },
+        );
       },
     );
 
@@ -360,7 +390,11 @@ class _HistorialBloquePageState extends State<HistorialBloquePage> {
         if (Navigator.of(context).canPop()) Navigator.of(context).pop();
       } catch (_) {}
 
-      Get.snackbar('Exportado', 'Archivo generado: $outPath', snackPosition: SnackPosition.BOTTOM);
+      Get.snackbar(
+        'Exportado',
+        'Archivo generado: $outPath',
+        snackPosition: SnackPosition.BOTTOM,
+      );
     } catch (e) {
       // Error durante exportación
       setState(() {
@@ -373,7 +407,11 @@ class _HistorialBloquePageState extends State<HistorialBloquePage> {
         if (Navigator.of(context).canPop()) Navigator.of(context).pop();
       } catch (_) {}
 
-      Get.snackbar('Error', 'Fallo al exportar: ${e.toString()}', snackPosition: SnackPosition.BOTTOM);
+      Get.snackbar(
+        'Error',
+        'Fallo al exportar: ${e.toString()}',
+        snackPosition: SnackPosition.BOTTOM,
+      );
     }
   }
 
@@ -382,13 +420,16 @@ class _HistorialBloquePageState extends State<HistorialBloquePage> {
     return Scaffold(
       backgroundColor: const Color(0xFFF8F9FA),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: () {
-          Get.to(
-            () => const FormularioPage(),
-            arguments: {'bloque': widget.bloque},
-          );
-        },
-        backgroundColor: brandBlue,
+        onPressed:
+            _puedeRegistrar
+                ? () {
+                  Get.to(
+                    () => const FormularioPage(),
+                    arguments: {'bloque': widget.bloque},
+                  );
+                }
+                : null,
+        backgroundColor: _puedeRegistrar ? brandBlue : Colors.grey.shade400,
         elevation: 5,
         icon: const Icon(Icons.add, color: Colors.white),
         label: const Text(
@@ -484,15 +525,16 @@ class _HistorialBloquePageState extends State<HistorialBloquePage> {
                     hintText: 'Buscar por producto...',
                     hintStyle: TextStyle(color: Colors.grey[400]),
                     prefixIcon: const Icon(Icons.search, color: brandBlue),
-                    suffixIcon: _searchController.text.isNotEmpty
-                        ? IconButton(
-                            icon: const Icon(Icons.clear),
-                            onPressed: () {
-                              _searchController.clear();
-                              setState(() {});
-                            },
-                          )
-                        : null,
+                    suffixIcon:
+                        _searchController.text.isNotEmpty
+                            ? IconButton(
+                              icon: const Icon(Icons.clear),
+                              onPressed: () {
+                                _searchController.clear();
+                                setState(() {});
+                              },
+                            )
+                            : null,
                     border: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(12),
                       borderSide: BorderSide(color: Colors.grey[300]!),
@@ -589,17 +631,18 @@ class _HistorialBloquePageState extends State<HistorialBloquePage> {
                       ),
                     ),
                     const SizedBox(width: 8),
-                    Container(
-                      decoration: BoxDecoration(
-                        color: brandBlue,
-                        borderRadius: BorderRadius.circular(8),
+                    if (_puedeExportar)
+                      Container(
+                        decoration: BoxDecoration(
+                          color: brandBlue,
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: IconButton(
+                          onPressed: _exportarSemana,
+                          icon: const Icon(Icons.download, color: Colors.white),
+                          tooltip: 'Exportar mes',
+                        ),
                       ),
-                      child: IconButton(
-                        onPressed: _exportarSemana,
-                        icon: const Icon(Icons.download, color: Colors.white),
-                        tooltip: 'Exportar mes',
-                      ),
-                    ),
                   ],
                 ),
               ],
@@ -661,8 +704,9 @@ class _HistorialBloquePageState extends State<HistorialBloquePage> {
                     );
                   }
 
-                  List<dynamic> registrosMes =
-                      _filtrarRegistros(_registrosAgrupados[_mesSeleccionado]!);
+                  List<dynamic> registrosMes = _filtrarRegistros(
+                    _registrosAgrupados[_mesSeleccionado]!,
+                  );
 
                   if (registrosMes.isEmpty) {
                     return ListView(
@@ -730,7 +774,9 @@ class _HistorialBloquePageState extends State<HistorialBloquePage> {
   // Navegador de semanas (paginación)
   // -------------------------
   Widget _buildNavegadorSemanas(
-      List<MapEntry<DateTime, List<dynamic>>> semanas, int idx) {
+    List<MapEntry<DateTime, List<dynamic>>> semanas,
+    int idx,
+  ) {
     final int total = semanas.length;
     final semana = semanas[idx];
     final DateTime inicio = semana.key;
@@ -795,10 +841,7 @@ class _HistorialBloquePageState extends State<HistorialBloquePage> {
                 const SizedBox(height: 2),
                 Text(
                   '$cantidad ${cantidad == 1 ? 'registro' : 'registros'}',
-                  style: TextStyle(
-                    fontSize: 11,
-                    color: Colors.grey[500],
-                  ),
+                  style: TextStyle(fontSize: 11, color: Colors.grey[500]),
                 ),
               ],
             ),
@@ -916,17 +959,25 @@ class _HistorialBloquePageState extends State<HistorialBloquePage> {
                       if (listaProductos.isNotEmpty) ...[
                         const SizedBox(height: 6),
                         Text(
-                          listaProductos.map((p) {
-                            final n = p['producto'] ?? '';
-                            final d = p['dosis'] ?? '';
-                            final c = p['cat_toxic'] ?? '';
-                            final parts = <String>[];
-                            if ((n ?? '').toString().isNotEmpty) parts.add(n.toString());
-                            if ((d ?? '').toString().isNotEmpty) parts.add('Dosis: ${d.toString()}');
-                            if ((c ?? '').toString().isNotEmpty) parts.add('Cat: ${c.toString()}');
-                            return parts.join(' • ');
-                          }).join('\n'),
-                          style: TextStyle(color: Colors.grey[600], fontSize: 12),
+                          listaProductos
+                              .map((p) {
+                                final n = p['producto'] ?? '';
+                                final d = p['dosis'] ?? '';
+                                final c = p['cat_toxic'] ?? '';
+                                final parts = <String>[];
+                                if ((n ?? '').toString().isNotEmpty)
+                                  parts.add(n.toString());
+                                if ((d ?? '').toString().isNotEmpty)
+                                  parts.add('Dosis: ${d.toString()}');
+                                if ((c ?? '').toString().isNotEmpty)
+                                  parts.add('Cat: ${c.toString()}');
+                                return parts.join(' • ');
+                              })
+                              .join('\n'),
+                          style: TextStyle(
+                            color: Colors.grey[600],
+                            fontSize: 12,
+                          ),
                         ),
                       ],
                     ],
@@ -1071,31 +1122,40 @@ class _DonutPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     final stroke = size.width * 0.12;
     final rect = Offset.zero & size;
-    
+
     final center = rect.center;
     final radius = (size.width - stroke) / 2;
-    final bgPaint = Paint()
-      ..color = Colors.transparent
-      ..style = PaintingStyle.fill;
+    final bgPaint =
+        Paint()
+          ..color = Colors.transparent
+          ..style = PaintingStyle.fill;
     canvas.drawCircle(center, radius, bgPaint);
-    
-    final basePaint = Paint()
-      ..color = color.withOpacity(0.12)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = stroke
-      ..strokeCap = StrokeCap.round;
 
-    final progressPaint = Paint()
-      ..color = color
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = stroke
-      ..strokeCap = StrokeCap.round;
+    final basePaint =
+        Paint()
+          ..color = color.withOpacity(0.12)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = stroke
+          ..strokeCap = StrokeCap.round;
+
+    final progressPaint =
+        Paint()
+          ..color = color
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = stroke
+          ..strokeCap = StrokeCap.round;
 
     canvas.drawCircle(center, radius, basePaint);
 
     final startAngle = -pi / 2;
     final sweepAngle = 2 * pi * progress;
-    canvas.drawArc(Rect.fromCircle(center: center, radius: radius), startAngle, sweepAngle, false, progressPaint);
+    canvas.drawArc(
+      Rect.fromCircle(center: center, radius: radius),
+      startAngle,
+      sweepAngle,
+      false,
+      progressPaint,
+    );
   }
 
   @override

@@ -5,6 +5,7 @@ import 'package:get/get.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'dart:async';
+import 'dart:io';
 import 'login_controller.dart';
 import 'offline_sync_service.dart';
 
@@ -87,8 +88,7 @@ class _FormularioPageState extends State<FormularioPage> {
     final primerJueves = cuatroDeEnero.add(
       Duration(days: DateTime.thursday - cuatroDeEnero.weekday),
     );
-    final semana =
-        1 + juevesActual.difference(primerJueves).inDays ~/ 7;
+    final semana = 1 + juevesActual.difference(primerJueves).inDays ~/ 7;
 
     return semana > 52 ? 52 : semana;
   }
@@ -235,7 +235,9 @@ class _FormularioPageState extends State<FormularioPage> {
           print('   - ID: ${blanco['id']}, Nombre: ${blanco['nombre']}');
         }
       } else {
-        print('⚠️ No hay blancos biológicos disponibles en caché ni en Supabase');
+        print(
+          '⚠️ No hay blancos biológicos disponibles en caché ni en Supabase',
+        );
       }
     } catch (e) {
       print('❌ Error al cargar blancos biológicos: $e');
@@ -320,9 +322,7 @@ class _FormularioPageState extends State<FormularioPage> {
           campo: 'nombres',
         );
         _semanasDisponibles =
-            semanas
-                .map((item) => item['numero'].toString())
-                .toList();
+            semanas.map((item) => item['numero'].toString()).toList();
         _productosDisponibles = _nombresCatalogo(resultados[1]);
         _tiposDisponibles = _nombresCatalogo(resultados[2]);
         _direccionesDisponibles = _nombresCatalogo(resultados[3]);
@@ -634,6 +634,13 @@ class _FormularioPageState extends State<FormularioPage> {
   }
 
   Future<void> _guardarEnSupabase() async {
+    if (!loginController.visitantePuedeInsertar) {
+      Get.snackbar(
+        'Solo lectura',
+        'El perfil visitante no tiene permiso para insertar datos.',
+      );
+      return;
+    }
     if (!_formKey.currentState!.validate()) return;
 
     // Validación adicional: al menos un nombre de producto no vacío
@@ -799,11 +806,9 @@ class _FormularioPageState extends State<FormularioPage> {
       final url = Uri.parse(
         '${loginController.supabaseUrl}/rest/v1/aspersiones',
       );
-      final response = await http.post(
-        url,
-        headers: headers,
-        body: jsonEncode(payload),
-      ).timeout(const Duration(seconds: 8));
+      final response = await http
+          .post(url, headers: headers, body: jsonEncode(payload))
+          .timeout(const Duration(seconds: 8));
 
       print('SUPABASE URL: ${loginController.supabaseUrl}');
       print('STATUS: ${response.statusCode}');
@@ -825,11 +830,24 @@ class _FormularioPageState extends State<FormularioPage> {
     } on TimeoutException {
       await OfflineSyncService.enqueue('aspersiones', payload);
       _limpiarCampos();
-      Get.snackbar('Guardado sin internet', 'Se sincronizará automáticamente al recuperar conexión');
+      Get.snackbar(
+        'Guardado sin internet',
+        'Se sincronizará automáticamente al recuperar conexión',
+      );
     } on http.ClientException {
       await OfflineSyncService.enqueue('aspersiones', payload);
       _limpiarCampos();
-      Get.snackbar('Guardado sin internet', 'Se sincronizará automáticamente al recuperar conexión');
+      Get.snackbar(
+        'Guardado sin internet',
+        'Se sincronizará automáticamente al recuperar conexión',
+      );
+    } on HandshakeException {
+      await OfflineSyncService.enqueue('aspersiones', payload);
+      _limpiarCampos();
+      Get.snackbar(
+        'Guardado en este dispositivo',
+        'No se pudo validar el certificado de la conexión. El registro se subirá cuando la conexión sea segura.',
+      );
     } catch (e, st) {
       print('Excepción guardando: $e\n$st');
       Get.snackbar('Error Crítico', 'Verifica tu conexión');

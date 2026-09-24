@@ -1,11 +1,27 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 class OfflineSyncService {
   static const String _pendingKey = 'offline_pending_records';
+  static Future<void> _operationTail = Future<void>.value();
+
+  // Evita que dos sincronizaciones o un guardado local simultáneo sobrescriban
+  // la cola mientras se está enviando un lote a Supabase.
+  static Future<T> _serialized<T>(Future<T> Function() operation) {
+    final completer = Completer<T>();
+    _operationTail = _operationTail.then((_) async {
+      try {
+        completer.complete(await operation());
+      } catch (error, stackTrace) {
+        completer.completeError(error, stackTrace);
+      }
+    });
+    return completer.future;
+  }
 
   static Future<int> pendingCount() async {
     final prefs = await SharedPreferences.getInstance();
@@ -49,13 +65,25 @@ class OfflineSyncService {
   }
 
   static Future<void> enqueue(String table, Map<String, dynamic> payload) async {
-    final prefs = await SharedPreferences.getInstance();
-    final pending = _readPending(prefs);
-    pending.add({'table': table, 'payload': payload});
-    await prefs.setString(_pendingKey, jsonEncode(pending));
+    return _serialized(() async {
+      final prefs = await SharedPreferences.getInstance();
+      final pending = _readPending(prefs);
+      pending.add({'table': table, 'payload': payload});
+      await prefs.setString(_pendingKey, jsonEncode(pending));
+    });
   }
 
   static Future<int> syncPending({
+    required String supabaseUrl,
+    required String apiKey,
+  }) {
+    return _serialized(() => _syncPending(
+          supabaseUrl: supabaseUrl,
+          apiKey: apiKey,
+        ));
+  }
+
+  static Future<int> _syncPending({
     required String supabaseUrl,
     required String apiKey,
   }) async {
