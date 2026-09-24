@@ -522,9 +522,9 @@ class AseguramientoExcelService {
         '<xdr:cNvPicPr><a:picLocks noChangeAspect="1"/></xdr:cNvPicPr></xdr:nvPicPr>'
         '<xdr:blipFill><a:blip xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" r:embed="$relationshipId"/>'
         '<a:stretch><a:fillRect/></a:stretch></xdr:blipFill>'
-        // Ajustado al tamaño real de una celda de la plantilla (≈100 × 45 px)
-        // para que Excel móvil no reduzca la firma a una imagen casi imperceptible.
-        '<xdr:spPr><a:xfrm><a:off x="45000" y="18000"/><a:ext cx="950000" cy="430000"/></a:xfrm>'
+        // Firma ligeramente más pequeña y centrada para que se vea completa
+        // en Excel móvil, que suele escalar las imágenes de forma distinta.
+        '<xdr:spPr><a:xfrm><a:off x="140000" y="65000"/><a:ext cx="760000" cy="340000"/></a:xfrm>'
         '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr>'
         '</xdr:pic><xdr:clientData/></xdr:twoCellAnchor>';
   }
