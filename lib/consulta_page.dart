@@ -268,25 +268,6 @@ class _ConsultarPageState extends State<ConsultarPage> {
             ),
           ],
         ),
-        actions: [
-          if (puedeExportarExcel)
-            IconButton(
-              onPressed: _isExporting ? null : _exportarMapa,
-              tooltip: 'Exportar mapa a Excel',
-              icon:
-                  _isExporting
-                      ? SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(
-                          value: _exportProgress == 0 ? null : _exportProgress,
-                          color: Colors.white,
-                          strokeWidth: 2,
-                        ),
-                      )
-                      : const Icon(Icons.download_rounded, color: Colors.white),
-            ),
-        ],
       ),
 
       body: Column(

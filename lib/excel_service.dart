@@ -27,6 +27,21 @@ class MIPEExcelService {
     final ByteData data = await rootBundle.load('assets/aspersion.xlsx');
     final List<int> templateBytes = data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
 
+    // En web no existen los Isolates ni los ReceivePort: se genera en el
+    // hilo principal (cediendo el control para que la UI siga respondiendo).
+    if (kIsWeb) {
+      return _generarEnWeb(
+        templateBytes: templateBytes,
+        registros: registros,
+        nombreArchivo: nombreArchivo,
+        bloqueHeader: bloqueHeader,
+        jefeMipe: jefeMipe,
+        protegerHoja: protegerHoja,
+        onProgress: onProgress,
+        cancelToken: cancelToken,
+      );
+    }
+
     final receivePort = ReceivePort();
     final errorPort = ReceivePort();
     final exitPort = ReceivePort();
@@ -46,17 +61,8 @@ class MIPEExcelService {
       'cancelPort': cancelPort.sendPort,
     };
 
-    if (kIsWeb) {
-        Future<void>(() => _generateExcelBytesInIsolate(sendPort: receivePort.sendPort,
-          templateBytes: templateBytes,
-          registros: registros,
-          nombreArchivo: nombreArchivo,
-          bloqueHeader: bloqueHeader,
-          jefeMipe: jefeMipe));
-    } else {
-      await Isolate.spawn<_IsolatePayload>(_isolateEntry, _IsolatePayload(payload),
-          onError: errorPort.sendPort, onExit: exitPort.sendPort, errorsAreFatal: false);
-    }
+    await Isolate.spawn<_IsolatePayload>(_isolateEntry, _IsolatePayload(payload),
+        onError: errorPort.sendPort, onExit: exitPort.sendPort, errorsAreFatal: false);
 
     final completer = Completer<String>();
     StreamSubscription? sub;
@@ -146,7 +152,63 @@ class MIPEExcelService {
     }
   }
 
-  static void _isolateEntry(_IsolatePayload payload) {
+  /// Generación del Excel en web (sin Isolate).
+  static Future<String> _generarEnWeb({
+    required List<int> templateBytes,
+    required List<dynamic> registros,
+    required String nombreArchivo,
+    String? bloqueHeader,
+    String? jefeMipe,
+    bool protegerHoja = false,
+    void Function(double progress)? onProgress,
+    MIPECancellationToken? cancelToken,
+  }) async {
+    Uint8List? bytes;
+    Object? error;
+    var cancelado = false;
+
+    await _generateExcelBytesInIsolate(
+      send: (Object? message) {
+        if (message is! Map) return;
+        if (message['cancelado'] == true) cancelado = true;
+        if (message.containsKey('progress')) {
+          try {
+            onProgress?.call((message['progress'] as num).toDouble().clamp(0.0, 1.0));
+          } catch (_) {}
+        }
+        if (message.containsKey('doneBytes')) {
+          final raw = message['doneBytes'];
+          bytes = raw is Uint8List ? raw : Uint8List.fromList(List<int>.from(raw as List));
+        }
+        if (message.containsKey('error')) {
+          error = Exception(message['error']?.toString() ?? 'Error desconocido');
+        }
+      },
+      templateBytes: templateBytes,
+      registros: registros,
+      nombreArchivo: nombreArchivo,
+      bloqueHeader: bloqueHeader,
+      jefeMipe: jefeMipe,
+      protegerHoja: protegerHoja,
+      estaCancelado: () => cancelToken?.cancelado == true,
+    );
+
+    if (cancelado) throw const MIPECanceledException();
+    if (error != null) throw error!;
+    final resultado = bytes;
+    if (resultado == null) throw Exception('No se pudo generar el archivo Excel.');
+
+    final outPath = await saveExcelBytes(
+      resultado,
+      'MIPE_${nombreArchivo}_${DateTime.now().millisecondsSinceEpoch}.xlsx',
+    );
+    try {
+      onProgress?.call(1.0);
+    } catch (_) {}
+    return outPath;
+  }
+
+  static Future<void> _isolateEntry(_IsolatePayload payload) async {
     final Map<String, dynamic> msg = payload.message;
     final SendPort sendPort = msg['sendPort'] as SendPort;
     final List<int> templateBytes = List<int>.from(msg['templateBytes'] as List<dynamic>);
@@ -163,8 +225,8 @@ class MIPEExcelService {
       if (message == 'cancelar') cancelado = true;
     });
 
-    _generateExcelBytesInIsolate(
-      sendPort: sendPort,
+    await _generateExcelBytesInIsolate(
+      send: sendPort.send,
       templateBytes: templateBytes,
       registros: registros,
       nombreArchivo: nombreArchivo,
@@ -177,7 +239,7 @@ class MIPEExcelService {
   }
 
   static Future<void> _generateExcelBytesInIsolate({
-    required SendPort sendPort,
+    required void Function(Object?) send,
     required List<int> templateBytes,
     required List<dynamic> registros,
     required String nombreArchivo,
@@ -187,7 +249,7 @@ class MIPEExcelService {
     bool Function()? estaCancelado,
   }) async {
     try {
-      sendPort.send({'progress': 0.02});
+      send({'progress': 0.02});
 
       final archive = ZipDecoder().decodeBytes(templateBytes);
 
@@ -208,11 +270,11 @@ class MIPEExcelService {
       }
 
       if (worksheetFile == null) {
-        sendPort.send({'error': 'No se encontró xl/worksheets/sheet1.xml en la plantilla.'});
+        send({'error': 'No se encontró xl/worksheets/sheet1.xml en la plantilla.'});
         return;
       }
       if (stylesFile == null) {
-        sendPort.send({'error': 'No se encontró xl/styles.xml en la plantilla.'});
+        send({'error': 'No se encontró xl/styles.xml en la plantilla.'});
         return;
       }
 
@@ -316,12 +378,12 @@ class MIPEExcelService {
 
       for (var registro in registros) {
         if (estaCancelado?.call() == true) {
-          sendPort.send({'cancelado': true});
+          send({'cancelado': true});
           return;
         }
         if (registro is! Map<String, dynamic>) {
           processed++;
-          sendPort.send({'progress': (processed / total) * 0.7});
+          send({'progress': (processed / total) * 0.7});
           bloqueIndex++;
           continue;
         }
@@ -329,7 +391,7 @@ class MIPEExcelService {
         if (bloqueIndex % 8 == 0) {
           await Future<void>.delayed(Duration.zero);
           if (estaCancelado?.call() == true) {
-            sendPort.send({'cancelado': true});
+            send({'cancelado': true});
             return;
           }
         }
@@ -484,7 +546,7 @@ class MIPEExcelService {
 
         processed++;
         final double p = (processed / total) * 0.7;
-        sendPort.send({'progress': p.clamp(0.0, 1.0)});
+        send({'progress': p.clamp(0.0, 1.0)});
 
         bloqueIndex++;
       }
@@ -499,7 +561,7 @@ class MIPEExcelService {
         for (int r = 0; r < filasPorBloque; r++) filasConDatos.add(base + r);
       }
 
-      sendPort.send({'progress': 0.78});
+      send({'progress': 0.78});
 
       if (filasConDatos.isNotEmpty) {
         // Aplicar bordes a todas las celdas con datos (excluyendo columna A si tu plantilla lo requiere)
@@ -521,7 +583,7 @@ class MIPEExcelService {
         );
       }
 
-      sendPort.send({'progress': 0.88});
+      send({'progress': 0.88});
 
       final newArchive = Archive();
       for (final file in archive.files) {
@@ -554,16 +616,16 @@ class MIPEExcelService {
 
       final encoded = ZipEncoder().encode(newArchive);
       if (encoded == null) {
-        sendPort.send({'error': 'Error generando Excel: ZipEncoder devolvió null.'});
+        send({'error': 'Error generando Excel: ZipEncoder devolvió null.'});
         return;
       }
 
       final Uint8List encodedBytes = Uint8List.fromList(encoded);
-      sendPort.send({'progress': 1.0});
-      sendPort.send({'doneBytes': encodedBytes});
+      send({'progress': 1.0});
+      send({'doneBytes': encodedBytes});
     } catch (e, st) {
       try {
-        sendPort.send({'error': e.toString(), 'stack': st.toString()});
+        send({'error': e.toString(), 'stack': st.toString()});
       } catch (_) {}
     }
   }
@@ -1164,6 +1226,8 @@ class MIPECancellationToken {
     _sendPort = sendPort;
     if (_cancelRequested) sendPort.send('cancelar');
   }
+
+  bool get cancelado => _cancelRequested;
 
   void cancel() {
     _cancelRequested = true;
