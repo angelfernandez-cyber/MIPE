@@ -285,10 +285,17 @@ class PreviewAspersionPage extends StatelessWidget {
             _campo('Grupos fumigadores', fumigadores.join('  ·  ')),
           ],
           const SizedBox(height: 10),
-          _filaDatos([
-            ['Facilitador MIPE', registro['facilitador_mipe']],
-            ['Facilitador bloque', registro['facilitador_bloque']],
-          ]),
+          Wrap(
+            spacing: 18,
+            runSpacing: 12,
+            children: [
+              _firma('Firma quien registra', registro['firma_registra_base64']),
+              _firma(
+                'Firma administrador${registro['nombre_autoriza'] != null ? ' (${registro['nombre_autoriza']})' : ''}',
+                registro['firma_autoriza_base64'],
+              ),
+            ],
+          ),
         ],
       ),
     );
@@ -305,6 +312,37 @@ class PreviewAspersionPage extends StatelessWidget {
         ['Cat. tóxico', cat ?? producto['cat_toxic']],
         ['Blanco biológico', blanco ?? producto['blanco_biologico']],
       ]),
+    );
+  }
+
+  Widget _firma(String label, dynamic valor) {
+    final texto = valor?.toString().trim() ?? '';
+    Widget contenido;
+    if (texto.isEmpty) {
+      contenido = const Text('Sin firma', style: TextStyle(color: Colors.blueGrey));
+    } else {
+      try {
+        final b64 = texto.contains(',') ? texto.substring(texto.indexOf(',') + 1) : texto;
+        contenido = Image.memory(
+          base64Decode(base64.normalize(b64)),
+          height: 52,
+          fit: BoxFit.contain,
+          errorBuilder: (_, __, ___) => const Text('Firma no válida'),
+        );
+      } catch (_) {
+        contenido = const Text('Firma no válida');
+      }
+    }
+    return ConstrainedBox(
+      constraints: const BoxConstraints(minWidth: 125, maxWidth: 260),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label.toUpperCase(), style: TextStyle(color: Colors.grey[600], fontSize: 9, fontWeight: FontWeight.w700)),
+          const SizedBox(height: 4),
+          contenido,
+        ],
+      ),
     );
   }
 

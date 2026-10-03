@@ -15,12 +15,6 @@ class _VisitanteLoginPageState extends State<VisitanteLoginPage> {
   final TextEditingController _codigoController = TextEditingController();
 
   @override
-  void initState() {
-    super.initState();
-    loginController.message.value = '';
-  }
-
-  @override
   void dispose() {
     _codigoController.dispose();
     super.dispose();

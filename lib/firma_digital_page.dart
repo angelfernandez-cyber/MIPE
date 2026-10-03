@@ -7,6 +7,7 @@ import 'package:get/get.dart';
 
 import 'firma_digital_service.dart';
 import 'login_controller.dart';
+import 'password_dialog.dart';
 
 class FirmaDigitalPage extends StatefulWidget {
   const FirmaDigitalPage({super.key});
@@ -23,6 +24,7 @@ class _FirmaDigitalPageState extends State<FirmaDigitalPage> {
   String? _firmaActual;
   bool _loading = true;
   bool _saving = false;
+  String _modoFirma = 'predeterminada';
 
   String get _identificacion =>
       _login.loggedInUser.value?['identificacion']?.toString() ?? '';
@@ -33,6 +35,56 @@ class _FirmaDigitalPageState extends State<FirmaDigitalPage> {
   void initState() {
     super.initState();
     _cargarFirma();
+    _cargarModoFirma();
+  }
+
+  Future<void> _cargarModoFirma() async {
+    final modo = await FirmaDigitalService.leerModoFirma(
+      supabaseUrl: _login.supabaseUrl,
+      apiKey: _login.apiKey,
+      identificacion: _identificacion,
+      password: _login.passwordEnMemoria,
+    );
+    if (!mounted) return;
+    setState(() => _modoFirma = modo);
+  }
+
+  Future<void> _guardarModoFirma(bool usarPredeterminada) async {
+    final modo = usarPredeterminada ? 'predeterminada' : 'por_registro';
+    if (_login.esVisitante || _identificacion.isEmpty) {
+      Get.snackbar('Acceso no disponible', 'Inicia sesión con tu usuario.');
+      return;
+    }
+
+    final password = _login.passwordEnMemoria ?? await _pedirPassword();
+    if (password == null || password.isEmpty) return;
+    if (mounted) setState(() => _saving = true);
+    try {
+      await FirmaDigitalService.guardarModoFirma(
+        modo,
+        supabaseUrl: _login.supabaseUrl,
+        apiKey: _login.apiKey,
+        identificacion: _identificacion,
+        password: password,
+      );
+      if (!mounted) return;
+      setState(() => _modoFirma = modo);
+      Get.snackbar(
+        'Configuración guardada',
+        usarPredeterminada
+            ? 'Tu firma predeterminada estará disponible para los formularios.'
+            : 'En los formularios deberán dibujar tu firma manualmente.',
+        snackPosition: SnackPosition.BOTTOM,
+      );
+    } catch (error) {
+      Get.snackbar(
+        'No se pudo guardar',
+        error.toString().replaceFirst('Exception: ', ''),
+        snackPosition: SnackPosition.BOTTOM,
+      );
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
   }
 
   Future<void> _cargarFirma() async {
@@ -69,29 +121,7 @@ class _FirmaDigitalPageState extends State<FirmaDigitalPage> {
     return null;
   }
 
-  Future<String?> _pedirPassword() async {
-    final controller = TextEditingController();
-    final password = await Get.dialog<String>(
-      AlertDialog(
-        title: const Text('Confirma tu contraseña'),
-        content: TextField(
-          controller: controller,
-          obscureText: true,
-          autofocus: true,
-          decoration: const InputDecoration(labelText: 'Contraseña actual'),
-        ),
-        actions: [
-          TextButton(onPressed: Get.back, child: const Text('Cancelar')),
-          FilledButton(
-            onPressed: () => Get.back(result: controller.text),
-            child: const Text('Continuar'),
-          ),
-        ],
-      ),
-    );
-    controller.dispose();
-    return password;
-  }
+  Future<String?> _pedirPassword() => pedirPasswordDialog();
 
   Future<void> _guardar() async {
     if (_strokes.whereType<Offset>().length < 2) {
@@ -209,6 +239,82 @@ class _FirmaDigitalPageState extends State<FirmaDigitalPage> {
                   style: TextStyle(color: Colors.blueGrey),
                 ),
                 const SizedBox(height: 20),
+                Container(
+                  margin: const EdgeInsets.only(bottom: 16),
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(18),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.04),
+                        blurRadius: 10,
+                        offset: const Offset(0, 4),
+                      ),
+                    ],
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Uso de la firma',
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      Container(
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: _modoFirma == 'predeterminada'
+                              ? const Color(0xFFEAF7FF)
+                              : const Color(0xFFF5F7FA),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: _modoFirma == 'predeterminada'
+                                ? const Color(0xFFBFE7FF)
+                                : const Color(0xFFE2E8F0),
+                          ),
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(
+                              _modoFirma == 'predeterminada'
+                                  ? Icons.check_circle_rounded
+                                  : Icons.edit_note_rounded,
+                              color: _modoFirma == 'predeterminada'
+                                  ? const Color(0xFF008DC5)
+                                  : Colors.blueGrey,
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Text(
+                                _modoFirma == 'predeterminada'
+                                    ? 'Predeterminada: la firma se usa automáticamente en los formularios.'
+                                    : 'Por registro: cada formulario pedirá la firma antes de guardar.',
+                                style: const TextStyle(
+                                  fontSize: 13,
+                                  color: Colors.blueGrey,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      SwitchListTile.adaptive(
+                        contentPadding: EdgeInsets.zero,
+                        title: const Text('Usar mi firma como predeterminada'),
+                        subtitle: const Text(
+                          'Si está apagado, tendrás que firmar manualmente en cada registro.',
+                        ),
+                        value: _modoFirma == 'predeterminada',
+                        onChanged: _saving ? null : _guardarModoFirma,
+                      ),
+                    ],
+                  ),
+                ),
                 if (_loading)
                   const Center(child: CircularProgressIndicator())
                 else if (_firmaActual != null)

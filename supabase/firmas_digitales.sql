@@ -5,6 +5,12 @@ create table if not exists public.firmas_usuarios (
   actualizado_en timestamptz not null default now()
 );
 
+create table if not exists public.preferencias_firma_usuarios (
+  identificacion text primary key references public.persona(identificacion) on delete cascade,
+  usar_firma_predeterminada boolean not null default true,
+  actualizado_en timestamptz not null default now()
+);
+
 alter table public.aseguramiento_plaguicidas
   add column if not exists nombre_quien_asegura text,
   add column if not exists nombre_autoriza text,
@@ -14,6 +20,8 @@ alter table public.aseguramiento_plaguicidas
 
 alter table public.firmas_usuarios enable row level security;
 revoke all on table public.firmas_usuarios from public, anon, authenticated;
+alter table public.preferencias_firma_usuarios enable row level security;
+revoke all on table public.preferencias_firma_usuarios from public, anon, authenticated;
 
 create or replace function public.guardar_firma_usuario(
   p_identificacion text,
@@ -49,6 +57,39 @@ begin
 end;
 $$;
 
+create or replace function public.guardar_preferencia_firma_usuario(
+  p_identificacion text,
+  p_password text,
+  p_usar_firma_predeterminada boolean
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  if not exists (
+    select 1 from public.persona
+    where identificacion = p_identificacion
+      and password = p_password
+  ) then
+    raise exception 'Usuario o contraseña incorrectos';
+  end if;
+
+  insert into public.preferencias_firma_usuarios(
+    identificacion,
+    usar_firma_predeterminada,
+    actualizado_en
+  )
+  values (p_identificacion, coalesce(p_usar_firma_predeterminada, true), now())
+  on conflict (identificacion) do update
+    set usar_firma_predeterminada = excluded.usar_firma_predeterminada,
+        actualizado_en = now();
+
+  return jsonb_build_object('ok', true);
+end;
+$$;
+
 create or replace function public.obtener_firmas_aseguramiento(
   p_identificacion text,
   p_password text
@@ -74,11 +115,14 @@ begin
     'nombres', p.nombres,
     'admin', p.admin,
     'firma_png_base64', f.firma_png_base64,
+    'usar_firma_predeterminada', coalesce(pref.usar_firma_predeterminada, true),
     'actualizado_en', f.actualizado_en
   ) order by lower(coalesce(p.nombres, ''))), '[]'::jsonb)
   into v_firmas
   from public.persona p
   left join public.firmas_usuarios f on f.identificacion = p.identificacion
+  left join public.preferencias_firma_usuarios pref
+    on pref.identificacion = p.identificacion
   where p.identificacion = p_identificacion
      or upper(trim(coalesce(p.admin::text, 'N'))) = 'S';
 
@@ -112,9 +156,11 @@ end;
 $$;
 
 revoke all on function public.guardar_firma_usuario(text, text, text) from public;
+revoke all on function public.guardar_preferencia_firma_usuario(text, text, boolean) from public;
 revoke all on function public.obtener_firmas_aseguramiento(text, text) from public;
 revoke all on function public.eliminar_firma_usuario(text, text) from public;
 grant execute on function public.guardar_firma_usuario(text, text, text) to anon, authenticated;
+grant execute on function public.guardar_preferencia_firma_usuario(text, text, boolean) to anon, authenticated;
 grant execute on function public.obtener_firmas_aseguramiento(text, text) to anon, authenticated;
 grant execute on function public.eliminar_firma_usuario(text, text) to anon, authenticated;
 

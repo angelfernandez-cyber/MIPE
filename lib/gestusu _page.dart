@@ -6,6 +6,9 @@ import 'login_controller.dart';
 import 'gestusu_controller.dart';
 import 'visitante_config_dialog.dart';
 import 'visitante_service.dart';
+import 'firma_digital_service.dart';
+import 'firma_captura_dialog.dart';
+import 'password_dialog.dart';
 
 class GestionUsuariosPage extends StatefulWidget {
   const GestionUsuariosPage({super.key});
@@ -194,7 +197,6 @@ class _GestionUsuariosPageState extends State<GestionUsuariosPage> {
   void _mostrarDialogoModulos(Map<String, dynamic> user) {
     // Extraer módulos actuales (valores no numéricos del campo lectura)
     final todosLosModulos = [
-      'scanner',
       'mapa',
       'almacen',
       'respaldo',
@@ -213,12 +215,6 @@ class _GestionUsuariosPageState extends State<GestionUsuariosPage> {
 
     // Íconos y colores para cada módulo
     final moduloInfo = {
-      'scanner': {
-        'label': 'ESCÁNER QR',
-        'subtitle': 'Registro rápido por bloque',
-        'icon': Icons.qr_code_scanner_rounded,
-        'color': brandBlue,
-      },
       'mapa': {
         'label': 'MAPA DE BLOQUES',
         'subtitle': 'Control de aspersión',
@@ -555,8 +551,142 @@ class _GestionUsuariosPageState extends State<GestionUsuariosPage> {
   // ─── Serializar Set<int> → "401,402,410" ──────────────────────────────────
 
   // ─── Diálogo principal de permisos con grid de bloques ────────────────────
-  void _mostrarDialogoBloques(Map<String, dynamic> user) {
+  // ─── Firma del administrador (misma lógica que almacén) ─────────────────
+  String get _identificacionAdmin =>
+      loginController.loggedInUser.value?['identificacion']
+          ?.toString()
+          .trim() ??
+      '';
+
+  /// Devuelve la firma guardada del administrador y si tiene habilitada
+  /// la opción "Usar mi firma como predeterminada".
+  Future<({String? firma, bool usaPredeterminada})> _cargarFirmaAdmin() async {
+    final id = _identificacionAdmin;
+    if (id.isEmpty) return (firma: null, usaPredeterminada: true);
+    try {
+      final password = loginController.passwordEnMemoria;
+      final firmas =
+          password == null || password.isEmpty
+              ? await FirmaDigitalService.leerCache(id)
+              : await FirmaDigitalService.obtenerFirmas(
+                supabaseUrl: loginController.supabaseUrl,
+                apiKey: loginController.apiKey,
+                identificacion: id,
+                password: password,
+              );
+      for (final f in firmas) {
+        if (f['identificacion']?.toString() == id) {
+          final imagen = f['firma_png_base64']?.toString() ?? '';
+          return (
+            firma: imagen.isEmpty ? null : imagen,
+            usaPredeterminada: f['usar_firma_predeterminada'] != false,
+          );
+        }
+      }
+    } catch (e) {
+      debugPrint('No se pudo cargar la firma del administrador: $e');
+    }
+    return (firma: null, usaPredeterminada: true);
+  }
+
+  Future<String?> _pedirPasswordAdmin(BuildContext ctx) =>
+      pedirPasswordDialog();
+
+  Widget _buildSeccionFirmaBloques({
+    required bool capturaFirma,
+    required String? firmaPredeterminada,
+    required String? firmaCapturada,
+    required VoidCallback? onFirmar,
+  }) {
+    final firmaVisible = capturaFirma ? firmaCapturada : firmaPredeterminada;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'FIRMA DE QUIEN AUTORIZA',
+            style: TextStyle(
+              color: darkBlue,
+              fontWeight: FontWeight.w900,
+              fontSize: 12,
+            ),
+          ),
+          const SizedBox(height: 6),
+          InkWell(
+            onTap: capturaFirma ? onFirmar : null,
+            borderRadius: BorderRadius.circular(10),
+            child: Container(
+              height: 58,
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                border: Border.all(
+                  color:
+                      capturaFirma && firmaCapturada == null
+                          ? Colors.orange.shade300
+                          : brandBlue.withOpacity(0.25),
+                ),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    capturaFirma
+                        ? Icons.draw_outlined
+                        : Icons.verified_rounded,
+                    color: brandBlue,
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      !capturaFirma
+                          ? 'Firma predeterminada'
+                          : firmaCapturada == null
+                          ? 'Toca para firmar'
+                          : 'Firma lista',
+                      style: const TextStyle(color: Colors.blueGrey),
+                    ),
+                  ),
+                  if (firmaVisible != null)
+                    Image.memory(
+                      base64Decode(firmaVisible),
+                      width: 80,
+                      height: 42,
+                      fit: BoxFit.contain,
+                      errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                    ),
+                  if (capturaFirma)
+                    const Padding(
+                      padding: EdgeInsets.only(left: 6),
+                      child: Icon(
+                        Icons.open_in_full,
+                        size: 18,
+                        color: Colors.blueGrey,
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _mostrarDialogoBloques(Map<String, dynamic> user) async {
     Set<int> seleccionados = _parsearBloques(user['lectura']?.toString());
+
+    final firmaAdmin = await _cargarFirmaAdmin();
+    if (!mounted) return;
+    final String? firmaPredeterminada = firmaAdmin.firma;
+    // Igual que almacén: se dibuja la firma si el admin desactivó la
+    // firma predeterminada o si todavía no tiene una guardada.
+    final bool capturaFirma =
+        !firmaAdmin.usaPredeterminada || firmaPredeterminada == null;
+    String? firmaCapturada;
+    bool guardando = false;
+
     showDialog(
       context: context,
       builder: (ctx) {
@@ -639,6 +769,11 @@ class _GestionUsuariosPageState extends State<GestionUsuariosPage> {
                       ),
                     ),
 
+                    Flexible(
+                      child: SingleChildScrollView(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
                     // 🔹 CONTROLES
                     Padding(
                       padding: const EdgeInsets.fromLTRB(16, 14, 16, 6),
@@ -687,7 +822,7 @@ class _GestionUsuariosPageState extends State<GestionUsuariosPage> {
 
                     // 🔥 GRID
                     SizedBox(
-                      height: 330,
+                      height: 300,
                       child: GridView.builder(
                         padding: const EdgeInsets.symmetric(horizontal: 12),
                         itemCount: 45,
@@ -739,6 +874,32 @@ class _GestionUsuariosPageState extends State<GestionUsuariosPage> {
                       ),
                     ),
 
+                    // ✍️ FIRMA
+                    _buildSeccionFirmaBloques(
+                      capturaFirma: capturaFirma,
+                      firmaPredeterminada: firmaPredeterminada,
+                      firmaCapturada: firmaCapturada,
+                      onFirmar:
+                          guardando
+                              ? null
+                              : () async {
+                                final firma = await mostrarDialogoFirma(
+                                  ctx,
+                                  titulo: 'Firma de quien autoriza',
+                                  subtitulo:
+                                      'Se guardará con este cambio de bloques.',
+                                  color: brandBlue,
+                                );
+                                if (firma != null) {
+                                  setDialogState(() => firmaCapturada = firma);
+                                }
+                              },
+                    ),
+                          ],
+                        ),
+                      ),
+                    ),
+
                     // 🔥 BOTONES
                     Padding(
                       padding: const EdgeInsets.all(16),
@@ -753,7 +914,12 @@ class _GestionUsuariosPageState extends State<GestionUsuariosPage> {
                           const SizedBox(width: 10),
                           Expanded(
                             child: ElevatedButton(
-                              onPressed: () async {
+                              onPressed:
+                                  guardando ||
+                                          (capturaFirma &&
+                                              firmaCapturada == null)
+                                      ? null
+                                      : () async {
                                 // Preservar módulos al guardar bloques
                                 final modulosExistentes =
                                     user['lectura']
@@ -777,11 +943,41 @@ class _GestionUsuariosPageState extends State<GestionUsuariosPage> {
                                   ...bloquesOrdenados.map((e) => e.toString()),
                                 ].join(',');
 
-                                bool ok = await gestUsuCtrl.actualizarPermiso(
-                                  user['identificacion'],
-                                  'lectura',
-                                  nuevaLectura.isEmpty ? 'N' : nuevaLectura,
-                                );
+                                final password =
+                                    loginController.passwordEnMemoria ??
+                                    await _pedirPasswordAdmin(ctx);
+                                if (password == null || password.isEmpty) {
+                                  return;
+                                }
+
+                                setDialogState(() => guardando = true);
+                                final error = await gestUsuCtrl
+                                    .guardarPermisosBloquesFirmado(
+                                      identificacionAdmin: _identificacionAdmin,
+                                      passwordAdmin: password,
+                                      identificacionUsuario:
+                                          user['identificacion'].toString(),
+                                      lectura:
+                                          nuevaLectura.isEmpty
+                                              ? 'N'
+                                              : nuevaLectura,
+                                      firmaPngBase64:
+                                          capturaFirma
+                                              ? firmaCapturada
+                                              : firmaPredeterminada,
+                                    );
+                                if (!ctx.mounted) return;
+                                setDialogState(() => guardando = false);
+                                if (error != null) {
+                                  Get.snackbar(
+                                    'No se pudo guardar',
+                                    error,
+                                    backgroundColor: Colors.redAccent,
+                                    colorText: Colors.white,
+                                  );
+                                  return;
+                                }
+                                final ok = true;
 
                                 if (ok) {
                                   // ✅ AGREGAR ESTA LÍNEA - actualizar el objeto user directamente
@@ -803,7 +999,7 @@ class _GestionUsuariosPageState extends State<GestionUsuariosPage> {
                                   Navigator.of(ctx).pop();
                                   Get.snackbar(
                                     'Éxito',
-                                    'Permisos actualizados',
+                                    'Permisos actualizados y firmados',
                                     backgroundColor: Colors.green,
                                     colorText: Colors.white,
                                   );
@@ -812,7 +1008,21 @@ class _GestionUsuariosPageState extends State<GestionUsuariosPage> {
                               style: ElevatedButton.styleFrom(
                                 backgroundColor: brandBlue,
                               ),
-                              child: const Text("Guardar"),
+                              child:
+                                  guardando
+                                      ? const SizedBox(
+                                        width: 18,
+                                        height: 18,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                          color: Colors.white,
+                                        ),
+                                      )
+                                      : Text(
+                                        capturaFirma && firmaCapturada == null
+                                            ? "Firma para guardar"
+                                            : "Guardar",
+                                      ),
                             ),
                           ),
                         ],
@@ -840,7 +1050,6 @@ class _GestionUsuariosPageState extends State<GestionUsuariosPage> {
     final partesLectura = lectura.split(',').map((e) => e.trim()).toList();
     final modulos =
         [
-          'scanner',
           'mapa',
           'almacen',
           'respaldo',

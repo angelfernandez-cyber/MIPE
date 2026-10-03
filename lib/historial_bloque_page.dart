@@ -87,7 +87,7 @@ class _HistorialBloquePageState extends State<HistorialBloquePage> {
         '${loginController.supabaseUrl}/rest/v1/aspersiones?bloque=eq.$numeroBloque&select=*&order=fecha_registro.desc',
       );
 
-      return OfflineSyncService.fetchListWithCache(
+      final registros = await OfflineSyncService.fetchListWithCache(
         cacheKey: 'cache_aspersiones_bloque_$numeroBloque',
         url: url,
         headers: {
@@ -95,6 +95,11 @@ class _HistorialBloquePageState extends State<HistorialBloquePage> {
           'Authorization': 'Bearer ${loginController.apiKey}',
         },
       );
+      // Registros guardados sin internet que aún no se suben.
+      final pendientes = (await OfflineSyncService.pendingRecords('aspersiones'))
+          .where((r) => r['bloque']?.toString() == numeroBloque.toString())
+          .toList();
+      return [...pendientes, ...registros];
     } catch (e) {
       return [];
     }
@@ -951,6 +956,28 @@ class _HistorialBloquePageState extends State<HistorialBloquePage> {
                           fontWeight: FontWeight.w600,
                         ),
                       ),
+                      if (reg is Map && reg['_pendiente_sync'] == true)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 4),
+                          child: Row(
+                            children: const [
+                              Icon(
+                                Icons.cloud_upload_rounded,
+                                size: 14,
+                                color: Color(0xFFE18A19),
+                              ),
+                              SizedBox(width: 4),
+                              Text(
+                                'Pendiente por subir',
+                                style: TextStyle(
+                                  color: Color(0xFFE18A19),
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
                       const SizedBox(height: 4),
                       Text(
                         fechaCorta,

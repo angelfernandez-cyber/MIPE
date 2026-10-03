@@ -82,7 +82,7 @@ class _HistorialAseguramientoPageState
       final url = Uri.parse(
         '${loginController.supabaseUrl}/rest/v1/aseguramiento_plaguicidas?select=*&order=fecha.desc',
       );
-      final data = await OfflineSyncService.fetchListWithCache(
+      final remotos = await OfflineSyncService.fetchListWithCache(
         cacheKey: 'cache_aseguramiento_plaguicidas',
         url: url,
         headers: {
@@ -90,6 +90,11 @@ class _HistorialAseguramientoPageState
           'Authorization': 'Bearer ${loginController.apiKey}',
         },
       );
+      // Registros guardados sin internet que aún no se suben.
+      final data = <dynamic>[
+        ...await OfflineSyncService.pendingRecords('aseguramiento_plaguicidas'),
+        ...remotos,
+      ];
       if (mounted) {
         setState(() {
           _todosLosRegistros = data;
@@ -1007,7 +1012,7 @@ class _HistorialAseguramientoPageState
               color: brandBlue,
             ),
             label: Text(
-              _periodoSeleccionado == null ? 'Filtrar semana / mes' : 'Limpiar',
+              _periodoSeleccionado == null ? 'Filtrar' : 'Limpiar',
               style: const TextStyle(
                 color: brandBlue,
                 fontWeight: FontWeight.bold,
@@ -1191,9 +1196,9 @@ class _HistorialAseguramientoPageState
       DataColumn(
         label: SizedBox(width: 60, child: Text('Observa.', style: st)),
       ),
-      DataColumn(label: SizedBox(width: 60, child: Text('Asegura', style: st))),
+      DataColumn(label: SizedBox(width: 130, child: Text('Asegura', style: st))),
       DataColumn(
-        label: SizedBox(width: 60, child: Text('Autoriza', style: st)),
+        label: SizedBox(width: 130, child: Text('Autoriza', style: st)),
       ),
     ];
   }
@@ -1204,6 +1209,11 @@ class _HistorialAseguramientoPageState
       color: Colors.black87,
       letterSpacing: 0.3,
     );
+    String textoConRespaldo(String campo, String respaldo) {
+      final valor = item[campo]?.toString().trim() ?? '';
+      return valor.isNotEmpty ? valor : item[respaldo]?.toString() ?? '';
+    }
+
     return [
       DataCell(
         SizedBox(
@@ -1214,7 +1224,15 @@ class _HistorialAseguramientoPageState
       DataCell(
         SizedBox(
           width: 85,
-          child: Text(item['fecha']?.toString() ?? '', style: cellStyle),
+          child: Text(
+            item['_pendiente_sync'] == true
+                ? '${item['fecha'] ?? ''}\n(pendiente)'
+                : item['fecha']?.toString() ?? '',
+            style:
+                item['_pendiente_sync'] == true
+                    ? cellStyle.copyWith(color: const Color(0xFFE18A19))
+                    : cellStyle,
+          ),
         ),
       ),
       DataCell(
@@ -1343,17 +1361,23 @@ class _HistorialAseguramientoPageState
       ),
       DataCell(
         SizedBox(
-          width: 60,
+          width: 130,
           child: Text(
-            item['identificacion_asegura']?.toString() ?? '',
+            textoConRespaldo(
+              'nombre_quien_asegura',
+              'identificacion_asegura',
+            ),
             style: cellStyle,
           ),
         ),
       ),
       DataCell(
         SizedBox(
-          width: 60,
-          child: Text(item['autorizacion']?.toString() ?? '', style: cellStyle),
+          width: 130,
+          child: Text(
+            textoConRespaldo('nombre_autoriza', 'autorizacion'),
+            style: cellStyle,
+          ),
         ),
       ),
     ];

@@ -69,12 +69,21 @@ class _ConsultarPageState extends State<ConsultarPage> {
           'Authorization': 'Bearer ${loginController.apiKey}',
         },
       );
+      // También cuentan los registros de hoy guardados sin internet.
+      final pendientesHoy = (await OfflineSyncService.pendingRecords('aspersiones'))
+          .where((r) {
+            final fecha = DateTime.tryParse(r['fecha_registro']?.toString() ?? '');
+            return fecha != null &&
+                fecha.year == ahora.year &&
+                fecha.month == ahora.month &&
+                fecha.day == ahora.day;
+          });
       if (!mounted) return;
       setState(() {
         _bloquesAsperjados
           ..clear()
           ..addAll(
-            response
+            [...response, ...pendientesHoy]
                 .map((r) => int.tryParse('${r['bloque']}'))
                 .whereType<int>(),
           );

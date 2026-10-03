@@ -8,6 +8,9 @@ import 'dart:async';
 import 'dart:io';
 import 'login_controller.dart';
 import 'offline_sync_service.dart';
+import 'formulario_layout_service.dart';
+import 'firma_digital_service.dart';
+import 'firma_captura_dialog.dart';
 
 class FormularioPage extends StatefulWidget {
   const FormularioPage({super.key});
@@ -21,6 +24,24 @@ class _FormularioPageState extends State<FormularioPage> {
   final _formKey = GlobalKey<FormState>();
   final LoginController loginController = Get.find<LoginController>();
   bool _isSaving = false;
+  List<List<String>> _filasCampos = [
+    for (final fila
+        in FormularioLayoutService.filasPredeterminadas[FormularioLayoutService
+            .mipe]!)
+      List<String>.from(fila),
+  ];
+  Map<String, String> _etiquetasCampos = {};
+
+  // --- FIRMAS (misma lógica que el formulario de almacén) ---
+  String _modoFirma = 'predeterminada';
+  final Map<String, String> _firmasPorIdentificacion = {};
+  final Map<String, bool> _usaFirmaPredeterminadaPorIdentificacion = {};
+  final List<String> _administradores = [];
+  final Map<String, String> _identificacionAdminPorNombre = {};
+  String? _firmaRegistraCapturada;
+  String? _firmaAutorizaCapturada;
+  String? _firmaRegistraLectura;
+  String? _firmaAutorizaLectura;
 
   final Color brandBlue = const Color(0xFF008DC5);
   final Color brandGreen = const Color(0xFF1DB954);
@@ -39,8 +60,7 @@ class _FormularioPageState extends State<FormularioPage> {
   final _equipoController = TextEditingController();
   final _ireController = TextEditingController();
   final _semanaController = TextEditingController();
-  final _facilitadorMipeController = TextEditingController();
-  final _facilitadorBloqueController = TextEditingController();
+  final _autorizaController = TextEditingController();
 
   // Listas dinámicas
   // ahora cada producto incluye: producto, dosis, cat_toxic, y blanco_id (ID del blanco seleccionado)
@@ -60,6 +80,7 @@ class _FormularioPageState extends State<FormularioPage> {
   List<String> _tiposDisponibles = [];
   List<String> _direccionesDisponibles = [];
   List<String> _gruposDisponibles = [];
+  List<String> _categoriasToxicologicasDisponibles = [];
 
   // Días laborables disponibles para el registro MIPE.
   final List<String> _diasDisponibles = [
@@ -68,13 +89,21 @@ class _FormularioPageState extends State<FormularioPage> {
     'Miércoles',
     'Jueves',
     'Viernes',
+    'Sábado',
   ];
   String? _diaSeleccionado; // ahora solo un día
 
   String? _diaActual() {
-    const nombres = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes'];
+    const nombres = [
+      'Lunes',
+      'Martes',
+      'Miércoles',
+      'Jueves',
+      'Viernes',
+      'Sábado',
+    ];
     final weekday = DateTime.now().weekday;
-    return weekday >= DateTime.monday && weekday <= DateTime.friday
+    return weekday >= DateTime.monday && weekday <= DateTime.saturday
         ? nombres[weekday - 1]
         : null;
   }
@@ -169,6 +198,315 @@ class _FormularioPageState extends State<FormularioPage> {
       _semanaController.text = _semanaActual().toString();
     }
     _inicializarFormulario();
+    _cargarFirmaUsuario();
+  }
+
+  String get _identificacionUsuario =>
+      loginController.loggedInUser.value?['identificacion']
+          ?.toString()
+          .trim() ??
+      '';
+
+  Future<void> _cargarFirmaUsuario() async {
+    await Future.wait([_cargarAdministradores(), _cargarFirmas()]);
+  }
+
+  Future<void> _cargarFirmas() async {
+    try {
+      final identificacion = _identificacionUsuario;
+      if (identificacion.isEmpty || loginController.esVisitante) return;
+      final password = loginController.passwordEnMemoria;
+      final firmas =
+          password == null || password.isEmpty
+              ? await FirmaDigitalService.leerCache(identificacion)
+              : await FirmaDigitalService.obtenerFirmas(
+                supabaseUrl: loginController.supabaseUrl,
+                apiKey: loginController.apiKey,
+                identificacion: identificacion,
+                password: password,
+              );
+      if (!mounted) return;
+      setState(() {
+        _firmasPorIdentificacion.clear();
+        _usaFirmaPredeterminadaPorIdentificacion.clear();
+        for (final f in firmas) {
+          final id = f['identificacion']?.toString() ?? '';
+          if (id.isEmpty) continue;
+          final imagen = f['firma_png_base64']?.toString() ?? '';
+          if (imagen.isNotEmpty) _firmasPorIdentificacion[id] = imagen;
+          _usaFirmaPredeterminadaPorIdentificacion[id] =
+              f['usar_firma_predeterminada'] != false;
+        }
+        _modoFirma =
+            _usaFirmaPredeterminadaPorIdentificacion[identificacion] == false
+                ? 'por_registro'
+                : 'predeterminada';
+      });
+    } catch (e) {
+      debugPrint('No se pudieron cargar las firmas: $e');
+    }
+  }
+
+  Future<void> _cargarAdministradores() async {
+    try {
+      final uri = Uri.parse(
+        '${loginController.supabaseUrl}/rest/v1/persona',
+      ).replace(
+        queryParameters: {
+          'select': 'nombres,identificacion',
+          'admin': 'eq.S',
+          'order': 'nombres.asc',
+        },
+      );
+      final registros = await OfflineSyncService.fetchListWithCache(
+        cacheFirst: true,
+        cacheKey: 'cache_persona_administradores',
+        url: uri,
+        headers: {
+          'apikey': loginController.apiKey,
+          'Authorization': 'Bearer ${loginController.apiKey}',
+        },
+      );
+      final identificaciones = <String, String>{};
+      for (final registro in registros.whereType<Map>()) {
+        final nombre = registro['nombres']?.toString().trim() ?? '';
+        final id = registro['identificacion']?.toString().trim() ?? '';
+        if (nombre.isNotEmpty && id.isNotEmpty) identificaciones[nombre] = id;
+      }
+      final nombres =
+          identificaciones.keys.toList()
+            ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+      if (!mounted) return;
+      setState(() {
+        _administradores
+          ..clear()
+          ..addAll(nombres);
+        _identificacionAdminPorNombre
+          ..clear()
+          ..addAll(identificaciones);
+        if (!esModoLectura) {
+          _autorizaController.text = _adminAutomatico(nombres);
+        }
+      });
+    } catch (e) {
+      debugPrint('No se pudieron cargar los administradores: $e');
+    }
+  }
+
+  /// Administrador que autoriza, sin lista: el usuario actual si es
+  /// administrador; si no, el único administrador registrado; si hay
+  /// varios, queda vacío y la firma se dibuja a mano.
+  String _adminAutomatico(List<String> nombres) {
+    final usuario = loginController.loggedInUser.value;
+    final esAdmin =
+        usuario?['admin']?.toString().trim().toUpperCase() == 'S';
+    final nombreUsuario = usuario?['nombres']?.toString().trim() ?? '';
+    if (esAdmin && nombreUsuario.isNotEmpty) {
+      for (final n in nombres) {
+        if (n.toLowerCase() == nombreUsuario.toLowerCase()) return n;
+      }
+    }
+    return nombres.length == 1 ? nombres.first : '';
+  }
+
+  String? get _identificacionAdminSeleccionado {
+    final nombre = _autorizaController.text.trim().toLowerCase();
+    if (nombre.isEmpty) return null;
+    for (final entry in _identificacionAdminPorNombre.entries) {
+      if (entry.key.toLowerCase() == nombre) return entry.value;
+    }
+    return null;
+  }
+
+  // ---- Quien registra (usuario que llena el formulario) ----
+  String? get _firmaRegistraPredeterminada =>
+      _firmasPorIdentificacion[_identificacionUsuario];
+
+  bool get _capturaFirmaRegistra =>
+      _modoFirma == 'por_registro' || _firmaRegistraPredeterminada == null;
+
+  String? get _firmaRegistraParaGuardar =>
+      _capturaFirmaRegistra
+          ? _firmaRegistraCapturada
+          : _firmaRegistraPredeterminada;
+
+  // ---- Administrador que autoriza ----
+  String? get _firmaAutorizaPredeterminada {
+    final id = _identificacionAdminSeleccionado;
+    return id == null ? null : _firmasPorIdentificacion[id];
+  }
+
+  bool get _capturaFirmaAutoriza {
+    final id = _identificacionAdminSeleccionado;
+    final usaPredeterminada =
+        id == null ? true : _usaFirmaPredeterminadaPorIdentificacion[id] ?? true;
+    return !usaPredeterminada || _firmaAutorizaPredeterminada == null;
+  }
+
+  String? get _firmaAutorizaParaGuardar =>
+      _capturaFirmaAutoriza
+          ? _firmaAutorizaCapturada
+          : _firmaAutorizaPredeterminada;
+
+  bool get _firmaLista =>
+      (_firmaRegistraParaGuardar?.isNotEmpty ?? false) &&
+      (_firmaAutorizaParaGuardar?.isNotEmpty ?? false);
+
+  Widget _buildCampoFirma({
+    required String titulo,
+    required bool captura,
+    required String? firmaVisible,
+    required String? firmaCapturada,
+    required ValueChanged<String> onFirmada,
+  }) {
+    if (esModoLectura && firmaVisible == null) {
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 12),
+        child: _buildCard([
+          Text(
+            '$titulo: sin firma',
+            style: const TextStyle(color: Colors.blueGrey),
+          ),
+        ]),
+      );
+    }
+    final puedeFirmar = !esModoLectura && captura;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(left: 4, bottom: 6),
+            child: Text(
+              titulo,
+              style: const TextStyle(
+                fontWeight: FontWeight.w600,
+                fontSize: 12,
+                color: Colors.black54,
+              ),
+            ),
+          ),
+          InkWell(
+            onTap:
+                puedeFirmar
+                    ? () async {
+                      final firma = await mostrarDialogoFirma(
+                        context,
+                        titulo: titulo,
+                        color: brandBlue,
+                      );
+                      if (firma != null && mounted) {
+                        setState(() => onFirmada(firma));
+                      }
+                    }
+                    : null,
+            borderRadius: BorderRadius.circular(12),
+            child: Container(
+              height: 76,
+              padding: const EdgeInsets.symmetric(horizontal: 10),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color:
+                      puedeFirmar && firmaCapturada == null
+                          ? Colors.orange.shade300
+                          : brandBlue.withOpacity(0.25),
+                ),
+              ),
+              child:
+                  firmaVisible != null
+                      ? Image.memory(
+                        base64Decode(firmaVisible),
+                        fit: BoxFit.contain,
+                        errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                      )
+                      : Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(Icons.draw_outlined, color: brandBlue),
+                          const SizedBox(width: 6),
+                          const Flexible(
+                            child: Text(
+                              'Toca para firmar',
+                              style: TextStyle(color: Colors.blueGrey),
+                            ),
+                          ),
+                        ],
+                      ),
+            ),
+          ),
+          if (!esModoLectura)
+            Padding(
+              padding: const EdgeInsets.only(left: 4, top: 4),
+              child: Text(
+                captura
+                    ? (firmaCapturada == null
+                        ? 'Firma manual requerida'
+                        : 'Toca para repetir')
+                    : 'Firma predeterminada',
+                style: const TextStyle(fontSize: 11, color: Colors.blueGrey),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  String _etiquetaCampo(String id) =>
+      _etiquetasCampos[id] ??
+      FormularioLayoutService.nombresBloques[FormularioLayoutService
+          .mipe]![id]!;
+
+  List<Widget> _construirCamposConFilas({
+    required List<List<String>> filas,
+    required Map<String, Widget> campos,
+    required Map<String, String> seccionPorCampo,
+    required Map<String, String> titulosSeccion,
+  }) {
+    final widgets = <Widget>[];
+    String? seccionActual;
+
+    for (final fila in filas) {
+      final camposVisibles =
+          fila.where((id) {
+            if (id == 'administrador_autoriza') {
+              return false; // sin lista: se asigna automáticamente
+            }
+            return campos.containsKey(id);
+          }).toList();
+      if (camposVisibles.isEmpty) continue;
+      final id = camposVisibles.first;
+      final seccion = seccionPorCampo[id];
+      if (seccion != null && seccion != seccionActual) {
+        widgets.add(_buildSectionTitle(titulosSeccion[seccion] ?? seccion));
+        seccionActual = seccion;
+      }
+
+      if (camposVisibles.length == 2) {
+        final siguienteId = camposVisibles[1];
+        widgets.add(
+          Row(
+            children: [
+              Expanded(
+                child: KeyedSubtree(key: ValueKey(id), child: campos[id]!),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: KeyedSubtree(
+                  key: ValueKey(siguienteId),
+                  child: campos[siguienteId]!,
+                ),
+              ),
+            ],
+          ),
+        );
+      } else {
+        widgets.add(KeyedSubtree(key: ValueKey(id), child: campos[id]!));
+      }
+    }
+    return widgets;
   }
 
   Future<void> _inicializarFormulario() async {
@@ -222,6 +560,7 @@ class _FormularioPageState extends State<FormularioPage> {
         'Accept': 'application/json',
       };
       final data = await OfflineSyncService.fetchListWithCache(
+        cacheFirst: true,
         cacheKey: 'cache_catalogo_blancos_biologicos',
         url: url,
         headers: headers,
@@ -255,6 +594,7 @@ class _FormularioPageState extends State<FormularioPage> {
         'Accept': 'application/json',
       };
       final data = await OfflineSyncService.fetchListWithCache(
+        cacheFirst: true,
         cacheKey: 'cache_catalogo_equipos',
         url: url,
         headers: headers,
@@ -293,6 +633,7 @@ class _FormularioPageState extends State<FormularioPage> {
           '${loginController.supabaseUrl}/rest/v1/$table?select=$campo$filtro&order=$campo.asc',
         );
         return OfflineSyncService.fetchListWithCache(
+          cacheFirst: true,
           cacheKey: 'cache_catalogo_$table',
           url: url,
           headers: headers,
@@ -300,6 +641,7 @@ class _FormularioPageState extends State<FormularioPage> {
       }
 
       final semanas = await OfflineSyncService.fetchListWithCache(
+        cacheFirst: true,
         cacheKey: 'cache_catalogo_aseguramiento_semanas',
         url: Uri.parse(
           '${loginController.supabaseUrl}/rest/v1/aseguramiento_semanas?select=numero&activo=eq.true&order=numero.asc',
@@ -313,6 +655,7 @@ class _FormularioPageState extends State<FormularioPage> {
         fetchCatalogo('mipe_tipos'),
         fetchCatalogo('mipe_direcciones'),
         fetchCatalogo('mipe_grupos'),
+        fetchCatalogo('aseguramiento_categorias_toxicologicas'),
       ]);
 
       if (!mounted) return;
@@ -327,6 +670,7 @@ class _FormularioPageState extends State<FormularioPage> {
         _tiposDisponibles = _nombresCatalogo(resultados[2]);
         _direccionesDisponibles = _nombresCatalogo(resultados[3]);
         _gruposDisponibles = _nombresCatalogo(resultados[4]);
+        _categoriasToxicologicasDisponibles = _nombresCatalogo(resultados[5]);
       });
     } catch (e) {
       if (!mounted) return;
@@ -406,10 +750,6 @@ class _FormularioPageState extends State<FormularioPage> {
             borderSide: const BorderSide(color: Colors.redAccent),
           ),
         ),
-        hint: Text(
-          values.isEmpty ? 'Cargando opciones...' : 'Selecciona una opción',
-          style: TextStyle(fontSize: 14, color: Colors.grey[600]),
-        ),
         items:
             options
                 .map(
@@ -441,8 +781,11 @@ class _FormularioPageState extends State<FormularioPage> {
     _equipoController.text = data['equipo'] ?? "";
     _ireController.text = data['ire_horas']?.toString() ?? "";
     _semanaController.text = data['semana']?.toString() ?? "";
-    _facilitadorMipeController.text = data['facilitador_mipe'] ?? "";
-    _facilitadorBloqueController.text = data['facilitador_bloque'] ?? "";
+    _autorizaController.text = data['nombre_autoriza']?.toString() ?? '';
+    final firmaRegistra = data['firma_registra_base64']?.toString() ?? '';
+    _firmaRegistraLectura = firmaRegistra.isEmpty ? null : firmaRegistra;
+    final firmaAutoriza = data['firma_autoriza_base64']?.toString() ?? '';
+    _firmaAutorizaLectura = firmaAutoriza.isEmpty ? null : firmaAutoriza;
 
     // Cargar día si viene (acepta string o lista)
     _diaSeleccionado = null;
@@ -613,8 +956,6 @@ class _FormularioPageState extends State<FormularioPage> {
     _equipoController.clear();
     _ireController.clear();
     _semanaController.text = _semanaActual().toString();
-    _facilitadorMipeController.clear();
-    _facilitadorBloqueController.clear();
 
     for (var grupo in gruposFumigadores) {
       grupo.dispose();
@@ -629,8 +970,42 @@ class _FormularioPageState extends State<FormularioPage> {
     productos.clear();
 
     _diaSeleccionado = _diaActual();
+    _firmaRegistraCapturada = null;
+    _firmaAutorizaCapturada = null;
+    _autorizaController.text = _adminAutomatico(_administradores);
 
     setState(() {});
+  }
+
+  /// Aviso cuando termina la subida en segundo plano.
+  void _avisarResultadoSubida(int subidos) {
+    if (subidos > 0) {
+      Get.snackbar(
+        'Registro subido',
+        'El registro ya está en la nube.',
+        backgroundColor: const Color(0xFF16794A),
+        colorText: Colors.white,
+        snackPosition: SnackPosition.BOTTOM,
+        duration: const Duration(seconds: 2),
+      );
+      return;
+    }
+    final error = OfflineSyncService.ultimoErrorServidor;
+    if (error == null) return; // sin internet: queda pendiente (nube naranja)
+    final faltanColumnas =
+        error.contains('PGRST204') ||
+        error.contains('42703') ||
+        error.toLowerCase().contains('could not find the');
+    Get.snackbar(
+      'El servidor no aceptó el registro',
+      faltanColumnas
+          ? 'A Supabase le faltan columnas. Ejecuta el SQL de firmas en el SQL Editor; el registro queda pendiente y se subirá después.'
+          : 'Queda guardado en el celular como pendiente. Detalle: $error',
+      backgroundColor: Colors.red,
+      colorText: Colors.white,
+      snackPosition: SnackPosition.BOTTOM,
+      duration: const Duration(seconds: 8),
+    );
   }
 
   Future<void> _guardarEnSupabase() async {
@@ -654,6 +1029,27 @@ class _FormularioPageState extends State<FormularioPage> {
         'Error',
         'Debe agregar al menos un nombre de producto',
         backgroundColor: Colors.red,
+        colorText: Colors.white,
+      );
+      return;
+    }
+
+    final firmaRegistra = _firmaRegistraParaGuardar;
+    final firmaAutoriza = _firmaAutorizaParaGuardar;
+    if (firmaRegistra == null || firmaRegistra.isEmpty) {
+      Get.snackbar(
+        'Falta tu firma',
+        'Firma como quien registra antes de finalizar.',
+        backgroundColor: Colors.orange,
+        colorText: Colors.white,
+      );
+      return;
+    }
+    if (firmaAutoriza == null || firmaAutoriza.isEmpty) {
+      Get.snackbar(
+        'Falta la firma del administrador',
+        'El administrador debe firmar antes de finalizar.',
+        backgroundColor: Colors.orange,
         colorText: Colors.white,
       );
       return;
@@ -771,18 +1167,19 @@ class _FormularioPageState extends State<FormularioPage> {
                 ? _ireController.text.trim()
                 : null,
         'semana': semanaParsed,
-        'facilitador_mipe':
-            _facilitadorMipeController.text.trim().isNotEmpty
-                ? _facilitadorMipeController.text.trim()
-                : null,
-        'facilitador_bloque':
-            _facilitadorBloqueController.text.trim().isNotEmpty
-                ? _facilitadorBloqueController.text.trim()
-                : null,
         'usuario_registro':
             loginController.loggedInUser.value?['nombres'] ?? 'Operario',
         // **Solo añadimos blancos aquí** (sin tocar el resto)
         'blanco_biologico': blancosToSend,
+        'identificacion_registra':
+            _identificacionUsuario.isEmpty ? null : _identificacionUsuario,
+        'firma_registra_base64': firmaRegistra,
+        'nombre_autoriza':
+            _autorizaController.text.trim().isEmpty
+                ? null
+                : _autorizaController.text.trim(),
+        'identificacion_autoriza': _identificacionAdminSeleccionado,
+        'firma_autoriza_base64': firmaAutoriza,
       };
 
       // Eliminar claves con valor null
@@ -792,61 +1189,23 @@ class _FormularioPageState extends State<FormularioPage> {
       print('--- PAYLOAD PREVIO A ENVÍO ---');
       print(jsonEncode(payload));
 
-      final headers = {
-        'apikey': loginController.apiKey,
-        'Authorization': 'Bearer ${loginController.apiKey}',
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-        'Prefer': 'return=representation',
-      };
-
-      print('--- HEADERS ---');
-      print(headers);
-
-      final url = Uri.parse(
-        '${loginController.supabaseUrl}/rest/v1/aspersiones',
+      // Guardado inmediato en el celular; la subida a la nube va en segundo
+      // plano (no hay que esperar a saber si hay internet).
+      await OfflineSyncService.guardarLocalYSubir(
+        table: 'aspersiones',
+        payload: payload,
+        supabaseUrl: loginController.supabaseUrl,
+        apiKey: loginController.apiKey,
+        alTerminar: _avisarResultadoSubida,
       );
-      final response = await http
-          .post(url, headers: headers, body: jsonEncode(payload))
-          .timeout(const Duration(seconds: 8));
-
-      print('SUPABASE URL: ${loginController.supabaseUrl}');
-      print('STATUS: ${response.statusCode}');
-      print('BODY: ${response.body}');
-
-      if (response.statusCode == 201 || response.statusCode == 200) {
-        _limpiarCampos();
-        Get.snackbar(
-          'Éxito',
-          'Registro guardado correctamente',
-          backgroundColor: brandGreen,
-          colorText: Colors.white,
-          snackPosition: SnackPosition.BOTTOM,
-        );
-      } else {
-        print('Error al guardar: ${response.statusCode} - ${response.body}');
-        Get.snackbar('Error', 'No se pudo guardar: ${response.statusCode}');
-      }
-    } on TimeoutException {
-      await OfflineSyncService.enqueue('aspersiones', payload);
       _limpiarCampos();
       Get.snackbar(
-        'Guardado sin internet',
-        'Se sincronizará automáticamente al recuperar conexión',
-      );
-    } on http.ClientException {
-      await OfflineSyncService.enqueue('aspersiones', payload);
-      _limpiarCampos();
-      Get.snackbar(
-        'Guardado sin internet',
-        'Se sincronizará automáticamente al recuperar conexión',
-      );
-    } on HandshakeException {
-      await OfflineSyncService.enqueue('aspersiones', payload);
-      _limpiarCampos();
-      Get.snackbar(
-        'Guardado en este dispositivo',
-        'No se pudo validar el certificado de la conexión. El registro se subirá cuando la conexión sea segura.',
+        'Registro guardado',
+        'Guardado en el celular. Se sube a la nube automáticamente.',
+        backgroundColor: brandGreen,
+        colorText: Colors.white,
+        snackPosition: SnackPosition.BOTTOM,
+        duration: const Duration(seconds: 2),
       );
     } catch (e, st) {
       print('Excepción guardando: $e\n$st');
@@ -858,6 +1217,200 @@ class _FormularioPageState extends State<FormularioPage> {
 
   @override
   Widget build(BuildContext context) {
+    final campos = <String, Widget>{
+      'bloque': _buildInput(
+        _bloqueController,
+        _etiquetaCampo('bloque'),
+        Icons.grid_view,
+        TextInputType.number,
+        readOnly: true,
+      ),
+      'bombero': _buildCatalogoDropdown(
+        _bomberoController,
+        _etiquetaCampo('bombero'),
+        Icons.person,
+        _personasDisponibles,
+      ),
+      'jefe_mipe': _buildCatalogoDropdown(
+        _jefeMipeController,
+        _etiquetaCampo('jefe_mipe'),
+        Icons.assignment_ind,
+        _personasDisponibles,
+      ),
+      'semana': _buildCatalogoDropdown(
+        _semanaController,
+        _etiquetaCampo('semana'),
+        Icons.calendar_month,
+        _semanasDisponibles,
+      ),
+      'dia': _buildCard([_buildDiaSelector()]),
+      'temperatura': _buildInput(
+        _tempController,
+        _etiquetaCampo('temperatura'),
+        Icons.thermostat,
+        TextInputType.number,
+      ),
+      'humedad': _buildInput(
+        _humedadController,
+        _etiquetaCampo('humedad'),
+        Icons.water_drop,
+        TextInputType.number,
+      ),
+      'tipo': _buildCatalogoDropdown(
+        _tipoController,
+        _etiquetaCampo('tipo'),
+        Icons.category,
+        _tiposDisponibles,
+      ),
+      'direccion': _buildCatalogoDropdown(
+        _direccionController,
+        _etiquetaCampo('direccion'),
+        Icons.navigation,
+        _direccionesDisponibles,
+      ),
+      'productos': Column(
+        children: [
+          ...List.generate(
+            productos.length,
+            (index) => _buildProductCard(index),
+          ),
+          if (!esModoLectura)
+            ElevatedButton.icon(
+              onPressed: _agregarProducto,
+              icon: const Icon(Icons.add_circle_outline, color: Colors.white),
+              label: const Text(
+                'AGREGAR PRODUCTO',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: brandBlue,
+                minimumSize: const Size(double.infinity, 45),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+              ),
+            ),
+        ],
+      ),
+      'volumen_cama': _buildInput(
+        _volumenCamaController,
+        _etiquetaCampo('volumen_cama'),
+        Icons.layers,
+        TextInputType.number,
+      ),
+      'numero_camas': _buildInput(
+        _numCamasController,
+        _etiquetaCampo('numero_camas'),
+        Icons.format_list_numbered,
+        TextInputType.number,
+      ),
+      'grupos_fumigadores': Column(
+        children: [
+          ...List.generate(gruposFumigadores.length, (index) {
+            return Row(
+              children: [
+                Expanded(
+                  child: _buildCatalogoDropdown(
+                    gruposFumigadores[index],
+                    '${_etiquetaCampo('grupos_fumigadores')} ${index + 1}',
+                    Icons.groups,
+                    _gruposDisponibles,
+                  ),
+                ),
+                if (!esModoLectura)
+                  IconButton(
+                    icon: const Icon(
+                      Icons.remove_circle_outline,
+                      color: Colors.red,
+                    ),
+                    onPressed: () => _quitarGrupoFumigador(index),
+                  ),
+              ],
+            );
+          }),
+          if (!esModoLectura)
+            ElevatedButton.icon(
+              onPressed: _agregarGrupoFumigador,
+              icon: const Icon(Icons.add_circle_outline, color: Colors.white),
+              label: const Text(
+                'GRUPO FUMIGADORES',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: brandBlue,
+                minimumSize: const Size(double.infinity, 45),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+              ),
+            ),
+        ],
+      ),
+      'equipo': _buildEquipoDropdown(label: _etiquetaCampo('equipo')),
+      'ire': _buildInput(
+        _ireController,
+        _etiquetaCampo('ire'),
+        Icons.timer,
+        TextInputType.number,
+      ),
+      'administrador_autoriza': _buildCatalogoDropdown(
+        _autorizaController,
+        _etiquetaCampo('administrador_autoriza'),
+        Icons.admin_panel_settings_outlined,
+        _administradores,
+      ),
+      'firma_registra': _buildCampoFirma(
+        titulo: _etiquetaCampo('firma_registra'),
+        captura: _capturaFirmaRegistra,
+        firmaVisible:
+            esModoLectura ? _firmaRegistraLectura : _firmaRegistraParaGuardar,
+        firmaCapturada: _firmaRegistraCapturada,
+        onFirmada: (firma) => _firmaRegistraCapturada = firma,
+      ),
+      'firma_autoriza': _buildCampoFirma(
+        titulo: _etiquetaCampo('firma_autoriza'),
+        captura: _capturaFirmaAutoriza,
+        firmaVisible:
+            esModoLectura ? _firmaAutorizaLectura : _firmaAutorizaParaGuardar,
+        firmaCapturada: _firmaAutorizaCapturada,
+        onFirmada: (firma) => _firmaAutorizaCapturada = firma,
+      ),
+    };
+    const seccionPorCampo = <String, String>{
+      'bloque': 'ubicacion',
+      'bombero': 'ubicacion',
+      'jefe_mipe': 'ubicacion',
+      'semana': 'ubicacion',
+      'dia': 'dia',
+      'temperatura': 'ambiente',
+      'humedad': 'ambiente',
+      'tipo': 'aplicacion',
+      'direccion': 'aplicacion',
+      'productos': 'aplicacion',
+      'volumen_cama': 'aplicacion',
+      'numero_camas': 'aplicacion',
+      'grupos_fumigadores': 'aplicacion',
+      'equipo': 'operacion',
+      'ire': 'operacion',
+      'administrador_autoriza': 'firmas',
+      'firma_registra': 'firmas',
+      'firma_autoriza': 'firmas',
+    };
+    const titulosSeccion = <String, String>{
+      'ubicacion': 'DATOS DE UBICACIÓN Y RESPONSABLE',
+      'dia': 'DÍA (selección única)',
+      'ambiente': 'CONDICIONES AMBIENTALES',
+      'aplicacion': 'DETALLES DE APLICACIÓN',
+      'operacion': 'OPERACIÓN Y SEGURIDAD',
+      'firmas': 'FIRMAS',
+    };
+
     return Scaffold(
       backgroundColor: bgColor,
       appBar: AppBar(
@@ -887,210 +1440,12 @@ class _FormularioPageState extends State<FormularioPage> {
                 key: _formKey,
                 child: Column(
                   children: [
-                    _buildSectionTitle("DATOS DE UBICACIÓN Y RESPONSABLE"),
-                    _buildCard([
-                      Row(
-                        children: [
-                          Expanded(
-                            child: _buildInput(
-                              _bloqueController,
-                              'Bloque',
-                              Icons.grid_view,
-                              TextInputType.number,
-                            ),
-                          ),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: _buildCatalogoDropdown(
-                              _bomberoController,
-                              'Bombero',
-                              Icons.person,
-                              _personasDisponibles,
-                            ),
-                          ),
-                        ],
-                      ),
-                      _buildCatalogoDropdown(
-                        _jefeMipeController,
-                        'Jefe MIPE',
-                        Icons.assignment_ind,
-                        _personasDisponibles,
-                      ),
-                      _buildCatalogoDropdown(
-                        _semanaController,
-                        'Semana',
-                        Icons.calendar_month,
-                        _semanasDisponibles,
-                      ),
-                    ]),
-                    _buildSectionTitle("DÍA (selección única)"),
-                    _buildCard([_buildDiaSelector()]),
-                    _buildSectionTitle("CONDICIONES AMBIENTALES"),
-                    _buildCard([
-                      Row(
-                        children: [
-                          Expanded(
-                            child: _buildInput(
-                              _tempController,
-                              'Temp (°C)',
-                              Icons.thermostat,
-                              TextInputType.number,
-                            ),
-                          ),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: _buildInput(
-                              _humedadController,
-                              '% HR',
-                              Icons.water_drop,
-                              TextInputType.number,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ]),
-                    _buildSectionTitle("DETALLES DE APLICACIÓN"),
-                    _buildCard([
-                      Row(
-                        children: [
-                          Expanded(
-                            child: _buildCatalogoDropdown(
-                              _tipoController,
-                              'Tipo',
-                              Icons.category,
-                              _tiposDisponibles,
-                            ),
-                          ),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: _buildCatalogoDropdown(
-                              _direccionController,
-                              'Dirección',
-                              Icons.navigation,
-                              _direccionesDisponibles,
-                            ),
-                          ),
-                        ],
-                      ),
-                      ...List.generate(
-                        productos.length,
-                        (index) => _buildProductCard(index),
-                      ),
-                      if (!esModoLectura)
-                        ElevatedButton.icon(
-                          onPressed: _agregarProducto,
-                          icon: const Icon(
-                            Icons.add_circle_outline,
-                            color: Colors.white,
-                          ),
-                          label: const Text(
-                            'AGREGAR PRODUCTO',
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: brandBlue,
-                            minimumSize: const Size(double.infinity, 45),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                          ),
-                        ),
-                      const SizedBox(height: 10),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: _buildInput(
-                              _volumenCamaController,
-                              'Vol. Cama',
-                              Icons.layers,
-                              TextInputType.number,
-                            ),
-                          ),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: _buildInput(
-                              _numCamasController,
-                              'No. Camas',
-                              Icons.format_list_numbered,
-                              TextInputType.number,
-                            ),
-                          ),
-                        ],
-                      ),
-                      ...List.generate(gruposFumigadores.length, (index) {
-                        return Row(
-                          children: [
-                            Expanded(
-                              child: _buildCatalogoDropdown(
-                                gruposFumigadores[index],
-                                'Grupo ${index + 1}',
-                                Icons.groups,
-                                _gruposDisponibles,
-                              ),
-                            ),
-                            if (!esModoLectura)
-                              IconButton(
-                                icon: const Icon(
-                                  Icons.remove_circle_outline,
-                                  color: Colors.red,
-                                ),
-                                onPressed: () => _quitarGrupoFumigador(index),
-                              ),
-                          ],
-                        );
-                      }),
-                      if (!esModoLectura)
-                        ElevatedButton.icon(
-                          onPressed: _agregarGrupoFumigador,
-                          icon: const Icon(
-                            Icons.add_circle_outline,
-                            color: Colors.white,
-                          ),
-                          label: const Text(
-                            'GRUPO FUMIGADORES',
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: brandBlue,
-                            minimumSize: const Size(double.infinity, 45),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                          ),
-                        ),
-                    ]),
-                    _buildSectionTitle("OPERACIÓN Y SEGURIDAD"),
-                    _buildCard([
-                      _buildEquipoDropdown(),
-                      const SizedBox(height: 10),
-                      _buildInput(
-                        _ireController,
-                        'I.R.E (Horas de Reingreso)',
-                        Icons.timer,
-                        TextInputType.number,
-                      ),
-                    ]),
-                    _buildSectionTitle("FACILITADORES"),
-                    _buildCard([
-                      _buildCatalogoDropdown(
-                        _facilitadorMipeController,
-                        'Facilitador MIPE',
-                        Icons.person_4,
-                        _personasDisponibles,
-                      ),
-                      _buildCatalogoDropdown(
-                        _facilitadorBloqueController,
-                        'Facilitador Bloque',
-                        Icons.person_3,
-                        _personasDisponibles,
-                      ),
-                    ]),
+                    ..._construirCamposConFilas(
+                      filas: _filasCampos,
+                      campos: campos,
+                      seccionPorCampo: seccionPorCampo,
+                      titulosSeccion: titulosSeccion,
+                    ),
                     const SizedBox(height: 30),
                     _buildButtons(),
                     const SizedBox(height: 40),
@@ -1233,7 +1588,7 @@ class _FormularioPageState extends State<FormularioPage> {
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               Text(
-                'Producto ${index + 1}',
+                '${_etiquetaCampo('producto_item_nombre')} ${index + 1}',
                 style: TextStyle(
                   fontWeight: FontWeight.bold,
                   color: brandBlue,
@@ -1256,7 +1611,7 @@ class _FormularioPageState extends State<FormularioPage> {
           const SizedBox(height: 10),
           _buildCatalogoDropdown(
             productos[index]['producto']!,
-            'Nombre del Producto',
+            _etiquetaCampo('producto_item_nombre'),
             Icons.science,
             _productosDisponibles,
           ),
@@ -1265,18 +1620,18 @@ class _FormularioPageState extends State<FormularioPage> {
               Expanded(
                 child: _buildProductInput(
                   productos[index]['dosis']!,
-                  'Dosis',
+                  _etiquetaCampo('producto_item_dosis'),
                   Icons.straighten,
                   isDecimal: true,
                 ),
               ),
               const SizedBox(width: 10),
               Expanded(
-                child: _buildProductInput(
+                child: _buildCatalogoDropdown(
                   productos[index]['cat_toxic']!,
-                  'Cat. Toxico',
+                  _etiquetaCampo('producto_item_categoria'),
                   Icons.warning_amber_rounded,
-                  isDecimal: false,
+                  _categoriasToxicologicasDisponibles,
                 ),
               ),
             ],
@@ -1313,7 +1668,7 @@ class _FormularioPageState extends State<FormularioPage> {
             color: Colors.blueGrey[800],
           ),
           decoration: InputDecoration(
-            labelText: 'Blanco Biológico',
+            labelText: _etiquetaCampo('producto_item_blanco'),
             labelStyle: const TextStyle(fontSize: 12),
             filled: true,
             fillColor: Colors.blueGrey[50],
@@ -1358,9 +1713,9 @@ class _FormularioPageState extends State<FormularioPage> {
             icon: const Icon(Icons.arrow_drop_down_rounded),
             iconEnabledColor: brandBlue,
             decoration: InputDecoration(
-              labelText: 'Blanco Biológico',
+              labelText: _etiquetaCampo('producto_item_blanco'),
               labelStyle: TextStyle(color: Colors.blueGrey[600]),
-              prefixIcon: const Icon(Icons.bug_report, size: 20),
+              prefixIcon: Icon(Icons.bug_report, size: 20, color: brandBlue),
               border: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(10),
                 borderSide: BorderSide(color: Colors.blueGrey[200]!),
@@ -1373,6 +1728,10 @@ class _FormularioPageState extends State<FormularioPage> {
                 borderRadius: BorderRadius.circular(10),
                 borderSide: BorderSide(color: brandBlue, width: 1.5),
               ),
+              errorBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: const BorderSide(color: Colors.redAccent),
+              ),
               filled: true,
               fillColor: Colors.white,
               contentPadding: const EdgeInsets.symmetric(
@@ -1380,7 +1739,6 @@ class _FormularioPageState extends State<FormularioPage> {
                 vertical: 12,
               ),
             ),
-            hint: const Text('Seleccionar'),
             items:
                 _blancosDisponibles.map<DropdownMenuItem<int>>((blanco) {
                   return DropdownMenuItem<int>(
@@ -1453,9 +1811,10 @@ class _FormularioPageState extends State<FormularioPage> {
     TextEditingController controller,
     String label,
     IconData icon,
-    TextInputType type,
-  ) {
-    bool isReadOnly = esModoLectura || (label == 'Bloque');
+    TextInputType type, {
+    bool readOnly = false,
+  }) {
+    final isReadOnly = esModoLectura || readOnly;
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
       child: TextFormField(
@@ -1496,12 +1855,12 @@ class _FormularioPageState extends State<FormularioPage> {
     );
   }
 
-  Widget _buildEquipoDropdown() {
+  Widget _buildEquipoDropdown({required String label}) {
     // En modo lectura mostramos el valor guardado como campo de solo lectura.
     if (esModoLectura) {
       return _buildInput(
         _equipoController,
-        'EQUIPO',
+        label,
         Icons.handyman,
         TextInputType.text,
       );
@@ -1532,7 +1891,7 @@ class _FormularioPageState extends State<FormularioPage> {
         icon: const Icon(Icons.arrow_drop_down_rounded),
         iconEnabledColor: brandBlue,
         decoration: InputDecoration(
-          labelText: 'EQUIPO',
+          labelText: label,
           labelStyle: TextStyle(color: Colors.blueGrey[600]),
           filled: true,
           fillColor: Colors.white,
@@ -1558,12 +1917,6 @@ class _FormularioPageState extends State<FormularioPage> {
             borderSide: const BorderSide(color: Colors.redAccent),
           ),
         ),
-        hint: Text(
-          _equiposDisponibles.isEmpty
-              ? 'Cargando equipos...'
-              : 'Selecciona un equipo',
-          style: TextStyle(fontSize: 14, color: Colors.grey[600]),
-        ),
         items:
             _equiposDisponibles.map<DropdownMenuItem<String>>((equipo) {
               final nombre = equipo['nombre']?.toString() ?? 'Sin nombre';
@@ -1588,10 +1941,10 @@ class _FormularioPageState extends State<FormularioPage> {
       return _isSaving
           ? const CircularProgressIndicator()
           : ElevatedButton.icon(
-            onPressed: _guardarEnSupabase,
+            onPressed: _firmaLista ? _guardarEnSupabase : null,
             icon: const Icon(Icons.cloud_upload_rounded, color: Colors.white),
-            label: const Text(
-              'FINALIZAR REGISTRO',
+            label: Text(
+              _firmaLista ? 'FINALIZAR REGISTRO' : 'FIRMA PARA FINALIZAR',
               style: TextStyle(
                 color: Colors.white,
                 fontWeight: FontWeight.bold,

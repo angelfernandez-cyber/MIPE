@@ -193,10 +193,18 @@ class MIPEExcelService {
 
       ArchiveFile? worksheetFile;
       ArchiveFile? stylesFile;
+      ArchiveFile? sharedStringsFile;
+      ArchiveFile? drawingFile;
+      ArchiveFile? drawingRelsFile;
 
       for (final file in archive.files) {
         if (file.name == 'xl/worksheets/sheet1.xml') worksheetFile = file;
         if (file.name == 'xl/styles.xml') stylesFile = file;
+        if (file.name == 'xl/sharedStrings.xml') sharedStringsFile = file;
+        if (file.name == 'xl/drawings/drawing1.xml') drawingFile = file;
+        if (file.name == 'xl/drawings/_rels/drawing1.xml.rels') {
+          drawingRelsFile = file;
+        }
       }
 
       if (worksheetFile == null) {
@@ -210,6 +218,65 @@ class MIPEExcelService {
 
       String sheetContent = String.fromCharCodes(worksheetFile.content as List<int>);
       String stylesContent = String.fromCharCodes(stylesFile.content as List<int>);
+
+      // --- Firmas: las columnas T y U (antes facilitadores) llevan las firmas ---
+      String? sharedStringsContent = sharedStringsFile == null
+          ? null
+          : utf8.decode(sharedStringsFile.content as List<int>);
+      String? drawingContent = drawingFile == null
+          ? null
+          : utf8.decode(drawingFile.content as List<int>);
+      String? drawingRelsContent = drawingRelsFile == null
+          ? null
+          : utf8.decode(drawingRelsFile.content as List<int>);
+      final bool soportaFirmas = drawingContent != null && drawingRelsContent != null;
+      if (sharedStringsContent != null) {
+        sharedStringsContent = sharedStringsContent
+            .replaceFirst('FACILITADOR MIPE', 'FIRMA QUIEN REGISTRA')
+            .replaceFirst('FACILITADOR BLOQUE', 'FIRMA ADMINISTRADOR');
+      }
+      // Columna T igual de ancha que U para que la firma se vea completa.
+      if (!sheetContent.contains('<col min="20" max="20"')) {
+        sheetContent = sheetContent.replaceFirst(
+          '<col min="21" max="21"',
+          '<col min="20" max="20" width="14" customWidth="1"/><col min="21" max="21"',
+        );
+      }
+      final firmaAnchors = StringBuffer();
+      final firmaRels = StringBuffer();
+      final firmaMedia = <ArchiveFile>[];
+      final mediaPorFirma = <String, String>{};
+      final relPorMedia = <String, String>{};
+      var siguienteRelId = 100;
+      var siguientePicId = 100;
+      var siguienteMediaId = 1;
+
+      void agregarFirma(dynamic valor, int columna, int filaExcel, String nombre) {
+        if (!soportaFirmas) return;
+        final bytes = _decodificarFirmaPng(valor);
+        if (bytes == null) return;
+        final original = valor.toString();
+        final mediaName = mediaPorFirma.putIfAbsent(original, () {
+          final name = 'firma_aspersion_${siguienteMediaId++}.png';
+          firmaMedia.add(ArchiveFile('xl/media/$name', bytes.length, bytes));
+          return name;
+        });
+        final relId = relPorMedia.putIfAbsent(mediaName, () {
+          final id = 'rId${siguienteRelId++}';
+          firmaRels.write(
+            '<Relationship Id="$id" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/$mediaName"/>',
+          );
+          return id;
+        });
+        firmaAnchors.write(_buildFirmaAnchor(
+          pictureId: siguientePicId++,
+          relationshipId: relId,
+          column: columna,
+          // Fila 0-based; la firma ocupa el centro del bloque de 7 filas.
+          row: filaExcel - 1 + 2,
+          name: nombre,
+        ));
+      }
 
       // Aseguramos que exista un estilo con borde y centrado; si no existe, lo añadimos
       stylesContent = _agregarEstilosConBorde(stylesContent);
@@ -290,8 +357,11 @@ class MIPEExcelService {
         final String numCamas = _s(registro['num_camas']);
         final String equipo = _s(registro['equipo']);
         final String ireHoras = _s(registro['ire_horas']);
-        final String facilitadorMipe = _s(registro['facilitador_mipe']);
-        final String facilitadorBloque = _s(registro['facilitador_bloque']);
+        // Columnas T/U: ahora llevan las firmas como imagen (sin texto).
+        const String facilitadorMipe = '';
+        const String facilitadorBloque = '';
+        agregarFirma(registro['firma_registra_base64'], 19, startRow, 'Firma registra fila $startRow');
+        agregarFirma(registro['firma_autoriza_base64'], 20, startRow, 'Firma administrador fila $startRow');
 
         // Convertir blancos a lista (si vienen concatenados o JSON)
         final List<String> blancosPorProducto = _parseToListStrings(blancoBiologico);
@@ -461,9 +531,25 @@ class MIPEExcelService {
         } else if (file.name == 'xl/styles.xml') {
           final bytes = utf8.encode(stylesContent);
           newArchive.addFile(ArchiveFile(file.name, bytes.length, bytes));
+        } else if (file.name == 'xl/sharedStrings.xml' && sharedStringsContent != null) {
+          final bytes = utf8.encode(sharedStringsContent);
+          newArchive.addFile(ArchiveFile(file.name, bytes.length, bytes));
+        } else if (file.name == 'xl/drawings/drawing1.xml' && soportaFirmas) {
+          final bytes = utf8.encode(
+            drawingContent!.replaceFirst('</xdr:wsDr>', '$firmaAnchors</xdr:wsDr>'),
+          );
+          newArchive.addFile(ArchiveFile(file.name, bytes.length, bytes));
+        } else if (file.name == 'xl/drawings/_rels/drawing1.xml.rels' && soportaFirmas) {
+          final bytes = utf8.encode(
+            drawingRelsContent!.replaceFirst('</Relationships>', '$firmaRels</Relationships>'),
+          );
+          newArchive.addFile(ArchiveFile(file.name, bytes.length, bytes));
         } else {
           newArchive.addFile(file);
         }
+      }
+      for (final media in firmaMedia) {
+        newArchive.addFile(media);
       }
 
       final encoded = ZipEncoder().encode(newArchive);
@@ -483,6 +569,48 @@ class MIPEExcelService {
   }
 
   // ----------------- Helpers (completas) -----------------
+
+  /// Devuelve los bytes PNG de una firma en base64 (acepta data:image/png;base64,...).
+  static List<int>? _decodificarFirmaPng(dynamic valor) {
+    final original = valor?.toString().trim() ?? '';
+    if (original.isEmpty) return null;
+    try {
+      final b64 = original.contains(',')
+          ? original.substring(original.indexOf(',') + 1)
+          : original;
+      final bytes = base64Decode(base64.normalize(b64));
+      if (bytes.length < 8 ||
+          bytes[0] != 0x89 ||
+          bytes[1] != 0x50 ||
+          bytes[2] != 0x4E ||
+          bytes[3] != 0x47) {
+        return null;
+      }
+      return bytes;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Imagen de firma dentro de una celda (columna de ancho 14, 3 filas de alto).
+  static String _buildFirmaAnchor({
+    required int pictureId,
+    required String relationshipId,
+    required int column,
+    required int row,
+    required String name,
+  }) {
+    final safeName = _escapeXml(name);
+    return '<xdr:twoCellAnchor editAs="oneCell">'
+        '<xdr:from><xdr:col>$column</xdr:col><xdr:colOff>60000</xdr:colOff><xdr:row>$row</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from>'
+        '<xdr:to><xdr:col>$column</xdr:col><xdr:colOff>920000</xdr:colOff><xdr:row>${row + 3}</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to>'
+        '<xdr:pic><xdr:nvPicPr><xdr:cNvPr id="$pictureId" name="$safeName"/>'
+        '<xdr:cNvPicPr><a:picLocks noChangeAspect="1"/></xdr:cNvPicPr></xdr:nvPicPr>'
+        '<xdr:blipFill><a:blip xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" r:embed="$relationshipId"/>'
+        '<a:stretch><a:fillRect/></a:stretch></xdr:blipFill>'
+        '<xdr:spPr><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr>'
+        '</xdr:pic><xdr:clientData/></xdr:twoCellAnchor>';
+  }
 
   static String _extraerBlockTemplate(String sheetContent, int startRow, int rowCount) {
     final buffer = StringBuffer();

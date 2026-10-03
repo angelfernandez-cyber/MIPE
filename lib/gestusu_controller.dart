@@ -70,6 +70,49 @@ class GestUsuController extends GetxController {
     }
   }
 
+  // --- GUARDAR PERMISOS DE BLOQUES CON FIRMA DEL ADMINISTRADOR ---
+  // Devuelve null si todo salió bien, o el mensaje de error.
+  Future<String?> guardarPermisosBloquesFirmado({
+    required String identificacionAdmin,
+    required String passwordAdmin,
+    required String identificacionUsuario,
+    required String lectura,
+    String? firmaPngBase64,
+  }) async {
+    try {
+      final response = await http
+          .post(
+            Uri.parse(
+              '${loginController.supabaseUrl}/rest/v1/rpc/guardar_permisos_bloques_firmado',
+            ),
+            headers: {
+              'apikey': loginController.apiKey,
+              'Authorization': 'Bearer ${loginController.apiKey}',
+              'Content-Type': 'application/json',
+            },
+            body: jsonEncode({
+              'p_identificacion': identificacionAdmin,
+              'p_password': passwordAdmin,
+              'p_usuario': identificacionUsuario,
+              'p_lectura': lectura,
+              'p_firma_png_base64': firmaPngBase64,
+            }),
+          )
+          .timeout(const Duration(seconds: 20));
+      if (response.statusCode == 200) return null;
+      try {
+        final decoded = jsonDecode(response.body);
+        if (decoded is Map && decoded['message'] != null) {
+          return decoded['message'].toString();
+        }
+      } catch (_) {}
+      return 'No se pudieron guardar los permisos (${response.statusCode}).';
+    } catch (e) {
+      print("Error guardando permisos firmados: $e");
+      return 'Error de conexión al guardar los permisos.';
+    }
+  }
+
   // --- EDITAR USUARIO ---
   Future<bool> editarUsuario(
     String idOriginal,

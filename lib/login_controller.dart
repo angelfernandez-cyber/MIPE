@@ -6,6 +6,7 @@ import 'dart:io';
 import 'package:local_auth/local_auth.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:crypto/crypto.dart';
 import 'package:local_auth_android/local_auth_android.dart';
 import 'dart:async';
 import 'offline_sync_service.dart';
@@ -244,10 +245,27 @@ class LoginController extends GetxController {
 
       debugPrint('Request login: $url');
 
-      final response = await http.get(
-        url,
-        headers: {'apikey': apiKey, 'Authorization': 'Bearer $apiKey'},
-      );
+      final http.Response response;
+      try {
+        response = await http
+            .get(
+              url,
+              headers: {'apikey': apiKey, 'Authorization': 'Bearer $apiKey'},
+            )
+            .timeout(const Duration(seconds: 10));
+      } on TimeoutException {
+        await _loginSinConexion(identificacion, password);
+        return;
+      } on http.ClientException {
+        await _loginSinConexion(identificacion, password);
+        return;
+      } on SocketException {
+        await _loginSinConexion(identificacion, password);
+        return;
+      } on HandshakeException {
+        await _loginSinConexion(identificacion, password);
+        return;
+      }
 
       debugPrint('Status: ${response.statusCode}');
       debugPrint('Body: ${response.body}');
@@ -265,6 +283,7 @@ class LoginController extends GetxController {
 
           loggedInUser.value = userMap;
           _passwordEnMemoria = password;
+          await _guardarCredencialOffline(userMap, password);
 
           final prefs = await SharedPreferences.getInstance();
           await prefs.setString('user_data', json.encode(userMap));
@@ -288,6 +307,72 @@ class LoginController extends GetxController {
       debugPrint('login error: $e\n$st');
     } finally {
       isLoading.value = false;
+    }
+  }
+
+  // ─────────────────────────────────────────────
+  // LOGIN SIN INTERNET
+  // ─────────────────────────────────────────────
+  // Tras cada ingreso exitoso con internet se guarda (cifrado en el
+  // almacenamiento seguro del celular) el usuario y un hash de su contraseña.
+  // Sin conexión se permite entrar si coinciden, para seguir trabajando y
+  // dejar los registros pendientes por subir.
+  String _offlineKey(String identificacion) =>
+      'offline_login_${identificacion.trim()}';
+
+  String _hashPassword(String identificacion, String password) =>
+      sha256.convert(utf8.encode('${identificacion.trim()}|$password|mipe')).toString();
+
+  Future<void> _guardarCredencialOffline(
+    Map<String, dynamic> userMap,
+    String password,
+  ) async {
+    try {
+      final id = userMap['identificacion'].toString();
+      await _secureStorage.write(
+        key: _offlineKey(id),
+        value: json.encode({
+          'hash': _hashPassword(id, password),
+          'user': userMap,
+        }),
+      );
+    } catch (e) {
+      debugPrint('No se pudo guardar el acceso offline: $e');
+    }
+  }
+
+  Future<void> _loginSinConexion(String identificacion, String password) async {
+    try {
+      final raw = await _secureStorage.read(key: _offlineKey(identificacion));
+      if (raw == null) {
+        message.value =
+            'Sin internet. Este usuario debe ingresar una vez con conexión en este celular.';
+        return;
+      }
+      final guardado = json.decode(raw) as Map<String, dynamic>;
+      if (guardado['hash'] != _hashPassword(identificacion, password)) {
+        message.value = 'Usuario o contraseña incorrectos';
+        return;
+      }
+      final userMap = Map<String, dynamic>.from(guardado['user'] as Map);
+      loggedInUser.value = userMap;
+      _passwordEnMemoria = password;
+
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('user_data', json.encode(userMap));
+      await prefs.setBool('biometria_habilitada', true);
+      if (recordarUsuario.value) {
+        await guardarUsuarioRecordado(userMap['identificacion'], password);
+      }
+      Get.offAllNamed('/home');
+      Get.snackbar(
+        'Modo sin conexión',
+        'Ingresaste sin internet. Los registros quedarán pendientes y se subirán al recuperar la conexión.',
+        snackPosition: SnackPosition.BOTTOM,
+      );
+    } catch (e) {
+      message.value = 'Sin internet y no se pudo validar el acceso guardado.';
+      debugPrint('_loginSinConexion error: $e');
     }
   }
 
@@ -361,11 +446,6 @@ class LoginController extends GetxController {
               .map((modulo) => modulo.trim())
               .where((modulo) => modulo.isNotEmpty)
               .toSet();
-      if (puedeInsertar) {
-        modulos.add('scanner');
-      } else {
-        modulos.remove('scanner');
-      }
       if (puedeExportar) {
         modulos.add('exportar_excel');
       } else {
@@ -461,7 +541,6 @@ class LoginController extends GetxController {
   }
 
   Future<bool> actualizarCuentaAdministrador({
-    required String nuevaIdentificacion,
     required String nuevaPassword,
   }) async {
     final actual = loggedInUser.value;
@@ -470,8 +549,15 @@ class LoginController extends GetxController {
       return false;
     }
 
+    final nuevaPasswordLimpia = nuevaPassword.trim();
+    if (nuevaPasswordLimpia.isEmpty) {
+      message.value = 'Escribe la nueva contraseña.';
+      return false;
+    }
+
     try {
       final identificacionActual = actual['identificacion'].toString();
+
       final url = Uri.parse(
         '$supabaseUrl/rest/v1/persona?identificacion=eq.$identificacionActual&admin=eq.S',
       );
@@ -481,32 +567,57 @@ class LoginController extends GetxController {
           'apikey': apiKey,
           'Authorization': 'Bearer $apiKey',
           'Content-Type': 'application/json',
-          'Prefer': 'return=minimal',
+          'Prefer': 'return=representation',
         },
-        body: jsonEncode({
-          'identificacion': nuevaIdentificacion.trim(),
-          'password': nuevaPassword,
-        }),
+        // Nunca enviamos 'identificacion'. Esa columna es la llave
+        // primaria de persona y esta referenciada por
+        // firmas_usuarios_identificacion_fkey; con el esquema actual
+        // (sin ON UPDATE CASCADE) Postgres rechaza cualquier UPDATE que
+        // incluya esa columna si el usuario ya tiene firmas registradas,
+        // aunque el valor nuevo sea igual al anterior. Por eso este
+        // formulario solo permite cambiar la contraseña.
+        body: jsonEncode({'password': nuevaPasswordLimpia}),
       );
+
+      debugPrint(
+        'actualizarCuentaAdministrador -> status=${response.statusCode} body=${response.body}',
+      );
+
       if (response.statusCode != 200 && response.statusCode != 204) {
+        String detalle = 'codigo ${response.statusCode}';
+        try {
+          final error = json.decode(response.body);
+          if (error is Map && error['message'] != null) {
+            detalle = error['message'].toString();
+          }
+        } catch (_) {}
+        message.value = 'No se pudo guardar: $detalle';
         return false;
       }
 
-      final actualizado = Map<String, dynamic>.from(actual)
-        ..['identificacion'] = nuevaIdentificacion.trim();
-      _passwordEnMemoria = nuevaPassword;
+      if (response.statusCode == 200) {
+        final filas = json.decode(response.body);
+        if (filas is List && filas.isEmpty) {
+          message.value =
+              'No se encontro tu cuenta de administrador para actualizar. '
+              'Vuelve a iniciar sesion e intentalo de nuevo.';
+          return false;
+        }
+      }
+
+      final actualizado = Map<String, dynamic>.from(actual);
+      _passwordEnMemoria = nuevaPasswordLimpia;
       loggedInUser.value = actualizado;
+      await _guardarCredencialOffline(actualizado, nuevaPasswordLimpia);
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('user_data', json.encode(actualizado));
       if (recordarUsuario.value) {
-        await guardarUsuarioRecordado(
-          nuevaIdentificacion.trim(),
-          nuevaPassword,
-        );
+        await guardarUsuarioRecordado(identificacionActual, nuevaPasswordLimpia);
       }
       return true;
     } catch (e, st) {
       debugPrint('Error al actualizar la cuenta del administrador: $e\n$st');
+      message.value = 'No se pudo guardar: ${e.toString()}';
       return false;
     }
   }

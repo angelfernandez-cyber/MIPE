@@ -291,10 +291,17 @@ class _LoginPageState extends State<LoginPage> {
 
                                   const SizedBox(height: 10),
                                   TextButton.icon(
-                                    onPressed:
-                                        () => Get.to(
-                                          () => const VisitanteLoginPage(),
-                                        ),
+                                    onPressed: () {
+                                      // Limpia el mensaje antes de construir la
+                                      // siguiente pantalla. Cambiar este Rx en
+                                      // initState de VisitanteLoginPage ocurre
+                                      // mientras GetX todavía está construyendo
+                                      // la ruta y puede provocar el error rojo.
+                                      loginController.message.value = '';
+                                      Get.to(
+                                        () => const VisitanteLoginPage(),
+                                      );
+                                    },
                                     icon: const Icon(
                                       Icons.person_pin_circle_outlined,
                                     ),

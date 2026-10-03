@@ -1,14 +1,18 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:get/get.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'dart:io';
+import 'dart:ui' as ui;
 import 'package:intl/intl.dart'; // Asegúrate de tener intl en tu pubspec.yaml
 import 'dart:async';
 import 'login_controller.dart';
 import 'offline_sync_service.dart';
 import 'firma_digital_service.dart';
+import 'formulario_layout_service.dart';
+import 'firma_captura_dialog.dart';
 
 class AseguramientoPage extends StatefulWidget {
   final Map<String, dynamic>? dataInicial; // Datos que vienen del historial
@@ -28,6 +32,13 @@ class _AseguramientoPageState extends State<AseguramientoPage> {
   final _formKey = GlobalKey<FormState>();
   final LoginController loginController = Get.find<LoginController>();
   bool _isSaving = false;
+  List<List<String>> _filasCampos = [
+    for (final fila
+        in FormularioLayoutService.filasPredeterminadas[FormularioLayoutService
+            .almacen]!)
+      List<String>.from(fila),
+  ];
+  Map<String, String> _etiquetasCampos = {};
 
   final Color brandBlue = const Color(0xFF008DC5);
   final Color brandGreen = const Color(0xFF1DB954);
@@ -63,12 +74,17 @@ class _AseguramientoPageState extends State<AseguramientoPage> {
   final List<String> _administradores = [];
   final Map<String, String> _identificacionAdminPorNombre = {};
   final Map<String, String> _firmasPorIdentificacion = {};
+  final Map<String, bool> _preferenciasFirmaPredeterminadaPorIdentificacion =
+      {};
+  String? _firmaAseguraCapturada;
+  String? _firmaAutorizaCapturada;
 
   // --- ESTADOS BOTONES SELECCIÓN ---
   String _estadoEtiqueta = 'CUMPLE';
   String _estadoTapa = 'CUMPLE';
   String _sellos = 'CUMPLE';
   String _puntosextraccion = 'CUMPLE';
+  String _modoFirma = 'predeterminada';
 
   int get _porcentajeCumplimiento {
     final criterios = [
@@ -133,6 +149,83 @@ class _AseguramientoPageState extends State<AseguramientoPage> {
     _cargarCatalogos();
     _cargarAdministradores();
     _cargarFirmas();
+    _cargarModoFirma();
+  }
+
+  String _etiquetaCampo(String id) =>
+      _etiquetasCampos[id] ??
+      FormularioLayoutService.nombresBloques[FormularioLayoutService
+          .almacen]![id]!;
+
+  List<Widget> _construirCamposConFilas({
+    required List<List<String>> filas,
+    required Map<String, Widget> campos,
+    required Map<String, String> seccionPorCampo,
+    required Map<String, String> titulosSeccion,
+  }) {
+    final widgets = <Widget>[];
+    String? seccionActual;
+    for (final fila in filas) {
+      final camposVisibles =
+          fila.where((id) {
+            if (id == 'otro_color' && _colorController.text != 'OTRO') {
+              return false;
+            }
+            if (id == 'administrador_autoriza') {
+              return false; // sin lista: se asigna automáticamente
+            }
+            return true;
+          }).toList();
+      if (camposVisibles.isEmpty) continue;
+
+      final id = camposVisibles.first;
+      final seccion = seccionPorCampo[id];
+      if (seccion != null && seccion != seccionActual) {
+        widgets.add(_sectionTitle(titulosSeccion[seccion] ?? seccion));
+        seccionActual = seccion;
+      }
+
+      if (camposVisibles.length == 2) {
+        final siguienteId = camposVisibles[1];
+        widgets.add(
+          Row(
+            children: [
+              Expanded(
+                child: KeyedSubtree(key: ValueKey(id), child: campos[id]!),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: KeyedSubtree(
+                  key: ValueKey(siguienteId),
+                  child: campos[siguienteId]!,
+                ),
+              ),
+            ],
+          ),
+        );
+      } else {
+        widgets.add(KeyedSubtree(key: ValueKey(id), child: campos[id]!));
+      }
+    }
+    return widgets;
+  }
+
+  Future<void> _cargarModoFirma() async {
+    try {
+      final identificacion =
+          loginController.loggedInUser.value?['identificacion']?.toString() ??
+          '';
+      final modo = await FirmaDigitalService.leerModoFirma(
+        supabaseUrl: loginController.supabaseUrl,
+        apiKey: loginController.apiKey,
+        identificacion: identificacion,
+        password: loginController.passwordEnMemoria,
+      );
+      if (!mounted) return;
+      setState(() => _modoFirma = modo);
+    } catch (e) {
+      debugPrint('No se pudo cargar el modo de firma: $e');
+    }
   }
 
   Future<void> _cargarAdministradores() async {
@@ -147,6 +240,7 @@ class _AseguramientoPageState extends State<AseguramientoPage> {
         },
       );
       final registros = await OfflineSyncService.fetchListWithCache(
+        cacheFirst: true,
         cacheKey: 'cache_persona_administradores',
         url: uri,
         headers: {
@@ -197,8 +291,8 @@ class _AseguramientoPageState extends State<AseguramientoPage> {
         _identificacionAdminPorNombre
           ..clear()
           ..addAll(identificaciones);
-        if (_autorizaController.text.trim().isEmpty && nombres.length == 1) {
-          _autorizaController.text = nombres.first;
+        if (widget.dataInicial == null) {
+          _autorizaController.text = _adminAutomatico(nombres);
         }
       });
     } catch (e) {
@@ -207,37 +301,56 @@ class _AseguramientoPageState extends State<AseguramientoPage> {
   }
 
   Future<void> _cargarFirmas() async {
-    final identificacion =
-        loginController.loggedInUser.value?['identificacion']?.toString() ?? '';
-    if (identificacion.isEmpty || loginController.esVisitante) return;
-    final password = loginController.passwordEnMemoria;
-    final firmas =
-        password == null || password.isEmpty
-            ? await FirmaDigitalService.leerCache(identificacion)
-            : await FirmaDigitalService.obtenerFirmas(
-              supabaseUrl: loginController.supabaseUrl,
-              apiKey: loginController.apiKey,
-              identificacion: identificacion,
-              password: password,
-            );
-    if (!mounted) return;
-    setState(() {
-      _firmasPorIdentificacion
-        ..clear()
-        ..addEntries(
-          firmas
-              .where((firma) {
-                final imagen = firma['firma_png_base64']?.toString() ?? '';
-                return imagen.isNotEmpty;
-              })
-              .map(
-                (firma) => MapEntry(
-                  firma['identificacion'].toString(),
-                  firma['firma_png_base64'].toString(),
+    try {
+      final identificacion =
+          loginController.loggedInUser.value?['identificacion']?.toString() ??
+          '';
+      if (identificacion.isEmpty || loginController.esVisitante) return;
+      final password = loginController.passwordEnMemoria;
+      final firmas =
+          password == null || password.isEmpty
+              ? await FirmaDigitalService.leerCache(identificacion)
+              : await FirmaDigitalService.obtenerFirmas(
+                supabaseUrl: loginController.supabaseUrl,
+                apiKey: loginController.apiKey,
+                identificacion: identificacion,
+                password: password,
+              );
+      if (!mounted) return;
+      setState(() {
+        _firmasPorIdentificacion
+          ..clear()
+          ..addEntries(
+            firmas
+                .where((firma) {
+                  final imagen = firma['firma_png_base64']?.toString() ?? '';
+                  return imagen.isNotEmpty;
+                })
+                .map(
+                  (firma) => MapEntry(
+                    firma['identificacion'].toString(),
+                    firma['firma_png_base64'].toString(),
+                  ),
                 ),
-              ),
-        );
-    });
+          );
+        _preferenciasFirmaPredeterminadaPorIdentificacion
+          ..clear()
+          ..addEntries(
+            firmas
+                .where((firma) {
+                  return firma['identificacion']?.toString().isNotEmpty == true;
+                })
+                .map(
+                  (firma) => MapEntry(
+                    firma['identificacion'].toString(),
+                    firma['usar_firma_predeterminada'] != false,
+                  ),
+                ),
+          );
+      });
+    } catch (e) {
+      debugPrint('No se pudieron cargar las firmas: $e');
+    }
   }
 
   String? _firmaAdministradorSeleccionado() {
@@ -245,6 +358,60 @@ class _AseguramientoPageState extends State<AseguramientoPage> {
     return identificacion == null
         ? null
         : _firmasPorIdentificacion[identificacion];
+  }
+
+  String? get _firmaAseguraPredeterminada {
+    final identificacion =
+        loginController.loggedInUser.value?['identificacion']
+            ?.toString()
+            .trim() ??
+        widget.dataInicial?['identificacion_asegura']?.toString().trim();
+    final firma =
+        (identificacion == null
+            ? null
+            : _firmasPorIdentificacion[identificacion]) ??
+        widget.dataInicial?['firma_asegura_base64']?.toString();
+    return firma == null || firma.isEmpty ? null : firma;
+  }
+
+  String? get _firmaAutorizaPredeterminada {
+    final firma =
+        _firmaAdministradorSeleccionado() ??
+        widget.dataInicial?['firma_autoriza_base64']?.toString();
+    return firma == null || firma.isEmpty ? null : firma;
+  }
+
+  bool get _capturaFirmaAsegura =>
+      _modoFirma == 'por_registro' || _firmaAseguraPredeterminada == null;
+
+  bool get _capturaFirmaAutoriza {
+    final identificacion = _identificacionAdminSeleccionado();
+    final usaPredeterminada =
+        identificacion == null
+            ? true
+            : _preferenciasFirmaPredeterminadaPorIdentificacion[identificacion] ??
+                true;
+    return !usaPredeterminada || _firmaAutorizaPredeterminada == null;
+  }
+
+  bool get _firmasManualesListas =>
+      (!_capturaFirmaAsegura || _firmaAseguraCapturada != null) &&
+      (!_capturaFirmaAutoriza || _firmaAutorizaCapturada != null);
+
+  /// Administrador que autoriza, sin lista: el usuario actual si es
+  /// administrador; si no, el único administrador registrado; si hay
+  /// varios, queda vacío y la firma se dibuja a mano.
+  String _adminAutomatico(List<String> nombres) {
+    final usuario = loginController.loggedInUser.value;
+    final esAdmin =
+        usuario?['admin']?.toString().trim().toUpperCase() == 'S';
+    final nombreUsuario = usuario?['nombres']?.toString().trim() ?? '';
+    if (esAdmin && nombreUsuario.isNotEmpty) {
+      for (final n in nombres) {
+        if (n.toLowerCase() == nombreUsuario.toLowerCase()) return n;
+      }
+    }
+    return nombres.length == 1 ? nombres.first : '';
   }
 
   String? _identificacionAdminSeleccionado() {
@@ -343,6 +510,7 @@ class _AseguramientoPageState extends State<AseguramientoPage> {
       queryParameters: {'select': select, if (order != null) 'order': order},
     );
     return OfflineSyncService.fetchListWithCache(
+      cacheFirst: true,
       cacheKey: 'cache_catalogo_$table',
       url: uri,
       headers: {
@@ -445,6 +613,392 @@ class _AseguramientoPageState extends State<AseguramientoPage> {
     }
   }
 
+  Future<String?> _firmaDesdeCanvas(
+    GlobalKey canvasKey,
+    List<Offset?> trazos,
+  ) async {
+    if (trazos.whereType<Offset>().length < 2) return null;
+
+    try {
+      final renderObject = canvasKey.currentContext?.findRenderObject();
+      if (renderObject is! RenderRepaintBoundary) {
+        return null;
+      }
+      final image = await renderObject.toImage(pixelRatio: 3);
+      final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+      image.dispose();
+      if (byteData == null) return null;
+      return base64Encode(byteData.buffer.asUint8List());
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<String?> _abrirDialogoFirma(String titulo) async {
+    final firmaCanvasKey = GlobalKey();
+    final trazos = <Offset?>[];
+
+    return showDialog<String>(
+      context: context,
+      builder:
+          (dialogContext) => StatefulBuilder(
+            builder:
+                (context, setDialogState) => Dialog(
+                  insetPadding: const EdgeInsets.symmetric(
+                    horizontal: 20,
+                    vertical: 24,
+                  ),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(18),
+                  ),
+                  child: ConstrainedBox(
+                    constraints: BoxConstraints(
+                      maxWidth: 460,
+                      maxHeight: MediaQuery.of(context).size.height * 0.88,
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.all(20),
+                      child: SingleChildScrollView(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            Row(
+                              children: [
+                                Container(
+                                  width: 42,
+                                  height: 42,
+                                  decoration: BoxDecoration(
+                                    color: brandBlue.withOpacity(0.1),
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                  child: Icon(
+                                    Icons.draw_rounded,
+                                    color: brandBlue,
+                                  ),
+                                ),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        titulo,
+                                        style: const TextStyle(
+                                          fontSize: 18,
+                                          fontWeight: FontWeight.w700,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 2),
+                                      const Text(
+                                        'La firma se guardará con este registro.',
+                                        style: TextStyle(
+                                          color: Colors.blueGrey,
+                                          fontSize: 12,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                IconButton(
+                                  tooltip: 'Cerrar',
+                                  onPressed:
+                                      () => Navigator.of(dialogContext).pop(),
+                                  icon: const Icon(Icons.close_rounded),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 18),
+                            Container(
+                              height: 190,
+                              clipBehavior: Clip.antiAlias,
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFFAFCFD),
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(
+                                  color: const Color(0xFFD7E1E7),
+                                ),
+                              ),
+                              child: Stack(
+                                children: [
+                                  RepaintBoundary(
+                                    key: firmaCanvasKey,
+                                    child: GestureDetector(
+                                      onPanStart:
+                                          (details) => setDialogState(
+                                            () => trazos.add(
+                                              details.localPosition,
+                                            ),
+                                          ),
+                                      onPanUpdate:
+                                          (details) => setDialogState(
+                                            () => trazos.add(
+                                              details.localPosition,
+                                            ),
+                                          ),
+                                      onPanEnd:
+                                          (_) => setDialogState(
+                                            () => trazos.add(null),
+                                          ),
+                                      child: CustomPaint(
+                                        painter: _FirmaPainter(trazos),
+                                        child: const SizedBox.expand(),
+                                      ),
+                                    ),
+                                  ),
+                                  if (trazos.isEmpty)
+                                    const Positioned.fill(
+                                      child: IgnorePointer(
+                                        child: Center(
+                                          child: Text(
+                                            'Firme aquí',
+                                            style: TextStyle(
+                                              color: Colors.blueGrey,
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            ),
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.end,
+                              children: [
+                                TextButton.icon(
+                                  onPressed:
+                                      trazos.isEmpty
+                                          ? null
+                                          : () => setDialogState(trazos.clear),
+                                  icon: const Icon(
+                                    Icons.delete_outline_rounded,
+                                  ),
+                                  label: const Text('Borrar'),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 4),
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: OutlinedButton(
+                                    onPressed:
+                                        () => Navigator.of(dialogContext).pop(),
+                                    child: const Text('Cancelar'),
+                                  ),
+                                ),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: FilledButton.icon(
+                                    onPressed:
+                                        trazos.whereType<Offset>().length < 2
+                                            ? null
+                                            : () async {
+                                              final firma =
+                                                  await _firmaDesdeCanvas(
+                                                    firmaCanvasKey,
+                                                    trazos,
+                                                  );
+                                              if (firma != null &&
+                                                  dialogContext.mounted) {
+                                                Navigator.of(
+                                                  dialogContext,
+                                                ).pop(firma);
+                                              }
+                                            },
+                                    icon: const Icon(Icons.check_rounded),
+                                    label: const Text('Guardar firma'),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+          ),
+    );
+  }
+
+  /// Recuadro de firma (mismo diseño que el formulario de mapa de bloques).
+  Widget _buildCampoFirmaBox({
+    required String titulo,
+    required bool captura,
+    required String? firmaVisible,
+    required String? firmaCapturada,
+    required ValueChanged<String> onFirmada,
+  }) {
+    final puedeFirmar = !widget.esLectura && captura;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(left: 4, bottom: 6),
+            child: Text(
+              titulo,
+              style: const TextStyle(
+                fontWeight: FontWeight.w600,
+                fontSize: 12,
+                color: Colors.black54,
+              ),
+            ),
+          ),
+          InkWell(
+            onTap:
+                puedeFirmar
+                    ? () async {
+                      final firma = await mostrarDialogoFirma(
+                        context,
+                        titulo: titulo,
+                        color: brandBlue,
+                      );
+                      if (firma != null && mounted) {
+                        setState(() => onFirmada(firma));
+                      }
+                    }
+                    : null,
+            borderRadius: BorderRadius.circular(12),
+            child: Container(
+              height: 76,
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 10),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color:
+                      puedeFirmar && firmaCapturada == null
+                          ? Colors.orange.shade300
+                          : brandBlue.withOpacity(0.25),
+                ),
+              ),
+              child:
+                  firmaVisible != null && firmaVisible.isNotEmpty
+                      ? Image.memory(
+                        base64Decode(firmaVisible),
+                        fit: BoxFit.contain,
+                        errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                      )
+                      : Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(Icons.draw_outlined, color: brandBlue),
+                          const SizedBox(width: 6),
+                          Flexible(
+                            child: Text(
+                              widget.esLectura ? 'Sin firma' : 'Toca para firmar',
+                              style: const TextStyle(color: Colors.blueGrey),
+                            ),
+                          ),
+                        ],
+                      ),
+            ),
+          ),
+          if (!widget.esLectura)
+            Padding(
+              padding: const EdgeInsets.only(left: 4, top: 4),
+              child: Text(
+                captura
+                    ? (firmaCapturada == null
+                        ? 'Firma manual requerida'
+                        : 'Toca para repetir')
+                    : 'Firma predeterminada',
+                style: const TextStyle(fontSize: 11, color: Colors.blueGrey),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCampoFirmaManual({
+    required String titulo,
+    required String? firma,
+    required ValueChanged<String> onFirmaGuardada,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: InkWell(
+        onTap:
+            widget.esLectura
+                ? null
+                : () async {
+                  final firma = await _abrirDialogoFirma(titulo);
+                  if (firma != null && mounted) {
+                    setState(() => onFirmaGuardada(firma));
+                  }
+                },
+        borderRadius: BorderRadius.circular(8),
+        child: Container(
+          height: 58,
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            border: Border.all(color: Colors.blueGrey.shade300),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Row(
+            children: [
+              const Icon(Icons.draw_outlined, color: Color(0xFF008DC5)),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  firma == null ? 'Firme aquí' : 'Firma lista',
+                  style: const TextStyle(color: Colors.blueGrey),
+                ),
+              ),
+              if (firma != null)
+                Image.memory(
+                  base64Decode(firma),
+                  width: 72,
+                  height: 42,
+                  fit: BoxFit.contain,
+                  errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                ),
+              const Icon(Icons.open_in_full, size: 18, color: Colors.blueGrey),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Aviso cuando termina la subida en segundo plano.
+  void _avisarResultadoSubida(int subidos) {
+    if (subidos > 0) {
+      Get.snackbar(
+        'Registro subido',
+        'El registro ya está en la nube.',
+        backgroundColor: const Color(0xFF16794A),
+        colorText: Colors.white,
+        snackPosition: SnackPosition.BOTTOM,
+        duration: const Duration(seconds: 2),
+      );
+      return;
+    }
+    final error = OfflineSyncService.ultimoErrorServidor;
+    if (error == null) return; // sin internet: queda pendiente (nube naranja)
+    final faltanColumnas =
+        error.contains('PGRST204') ||
+        error.contains('42703') ||
+        error.toLowerCase().contains('could not find the');
+    Get.snackbar(
+      'El servidor no aceptó el registro',
+      faltanColumnas
+          ? 'A Supabase le faltan columnas. Ejecuta el SQL de firmas en el SQL Editor; el registro queda pendiente y se subirá después.'
+          : 'Queda guardado en el celular como pendiente. Detalle: $error',
+      backgroundColor: Colors.red,
+      colorText: Colors.white,
+      snackPosition: SnackPosition.BOTTOM,
+      duration: const Duration(seconds: 8),
+    );
+  }
+
   Future<void> _guardarEnBaseDeDatos() async {
     if (!loginController.visitantePuedeInsertar) {
       Get.snackbar(
@@ -460,8 +1014,8 @@ class _AseguramientoPageState extends State<AseguramientoPage> {
     try {
       // Asegura que el usuario y los administradores terminaron de cargar
       // antes de construir el registro y copiar las firmas seleccionadas.
-      await _cargarAdministradores();
-      await _cargarFirmas();
+      // No se espera a internet: administradores y firmas ya vienen de la
+      // caché al abrir el formulario.
 
       // Helper local para convertir a mayúsculas y devolver null si vacío
       String? up(String? s) {
@@ -470,32 +1024,43 @@ class _AseguramientoPageState extends State<AseguramientoPage> {
         return t.isEmpty ? null : t.toUpperCase();
       }
 
+      final requiereFirmaAsegura = _capturaFirmaAsegura;
+      final requiereFirmaAutoriza = _capturaFirmaAutoriza;
       final idFirmaAutoriza = _identificacionAdminSeleccionado();
       final idFirmaAsegura =
           loginController.loggedInUser.value?['identificacion']
               ?.toString()
               .trim() ??
           widget.dataInicial?['identificacion_asegura']?.toString().trim();
-      final firmaAsegura =
-          (idFirmaAsegura == null
-              ? null
-              : _firmasPorIdentificacion[idFirmaAsegura]) ??
-          widget.dataInicial?['firma_asegura_base64']?.toString();
-      final firmaAutoriza =
-          (idFirmaAutoriza == null
-              ? null
-              : _firmasPorIdentificacion[idFirmaAutoriza]) ??
-          widget.dataInicial?['firma_autoriza_base64']?.toString();
+      final firmaAsegura = _firmaAseguraPredeterminada;
+      final firmaAutoriza = _firmaAutorizaPredeterminada;
 
-      if ((firmaAsegura == null || firmaAsegura.isEmpty) && !widget.esLectura) {
+      final firmaAseguraEnRegistro =
+          requiereFirmaAsegura ? _firmaAseguraCapturada : firmaAsegura;
+      if ((firmaAseguraEnRegistro == null || firmaAseguraEnRegistro.isEmpty) &&
+          !widget.esLectura) {
+        if (requiereFirmaAsegura) {
+          throw Exception(
+            'Debes dibujar la firma de quien asegura antes de guardar este registro.',
+          );
+        }
         throw Exception(
-          'No hay firma guardada para quien asegura. Guarda tu firma digital e inténtalo de nuevo.',
+          'No hay firma guardada para quien asegura. Ve a Mi firma y guarda tu firma o cambia la opción a “Cada registro”.',
         );
       }
-      if ((firmaAutoriza == null || firmaAutoriza.isEmpty) &&
+
+      final firmaAutorizaEnRegistro =
+          requiereFirmaAutoriza ? _firmaAutorizaCapturada : firmaAutoriza;
+      if ((firmaAutorizaEnRegistro == null ||
+              firmaAutorizaEnRegistro.isEmpty) &&
           !widget.esLectura) {
+        if (requiereFirmaAutoriza) {
+          throw Exception(
+            'Debes dibujar la firma de quien autoriza antes de guardar este registro.',
+          );
+        }
         throw Exception(
-          'No hay firma guardada para quien autoriza. Selecciona un administrador con firma registrada.',
+          'No hay firma guardada para quien autoriza. Selecciona un administrador con firma registrada o cambia la opción a “Cada registro”.',
         );
       }
 
@@ -537,12 +1102,10 @@ class _AseguramientoPageState extends State<AseguramientoPage> {
                 ? (up(_otroColorController.text) ?? 'NO DEFINIDO')
                 : (up(_colorController.text) ?? 'NO DEFINIDO'),
 
-        // ph y densidad NO obligatorios: si están vacíos se envía null
+        // El pH es obligatorio; la densidad sigue siendo opcional.
         'ph':
-            _phController.text.trim().isEmpty
-                ? null
-                : (int.tryParse(_phController.text) ??
-                    (double.tryParse(_phController.text)?.round())),
+            int.tryParse(_phController.text) ??
+            double.tryParse(_phController.text)?.round(),
         'densidad':
             _densidadController.text.trim().isEmpty
                 ? null
@@ -551,8 +1114,8 @@ class _AseguramientoPageState extends State<AseguramientoPage> {
         'observaciones': up(_obsController.text) ?? 'N/A',
         'autorizacion': up(_autorizaController.text),
         'nombre_autoriza': up(_autorizaController.text),
-        'firma_asegura_base64': firmaAsegura,
-        'firma_autoriza_base64': firmaAutoriza,
+        'firma_asegura_base64': firmaAseguraEnRegistro ?? firmaAsegura,
+        'firma_autoriza_base64': firmaAutorizaEnRegistro ?? firmaAutoriza,
         'identificacion_asegura': idFirmaAsegura,
         'identificacion_autoriza':
             idFirmaAutoriza ??
@@ -560,83 +1123,54 @@ class _AseguramientoPageState extends State<AseguramientoPage> {
         'nombre_quien_asegura': up(_aseguraController.text),
       };
 
-      final url = Uri.parse(
-        '${loginController.supabaseUrl}/rest/v1/aseguramiento_plaguicidas',
+      // Guardado inmediato en el celular; la subida a la nube va en segundo
+      // plano (no hay que esperar a saber si hay internet).
+      await OfflineSyncService.guardarLocalYSubir(
+        table: 'aseguramiento_plaguicidas',
+        payload: body,
+        supabaseUrl: loginController.supabaseUrl,
+        apiKey: loginController.apiKey,
+        alTerminar: _avisarResultadoSubida,
+      );
+      Get.snackbar(
+        'Registro guardado',
+        'Guardado en el celular. Se sube a la nube automáticamente.',
+        backgroundColor: brandGreen,
+        colorText: Colors.white,
+        snackPosition: SnackPosition.BOTTOM,
+        duration: const Duration(seconds: 2),
       );
 
-      final response = await http
-          .post(
-            url,
-            headers: {
-              'apikey': loginController.apiKey,
-              'Authorization': 'Bearer ${loginController.apiKey}',
-              'Content-Type': 'application/json',
-              'Prefer': 'return=minimal',
-            },
-            body: jsonEncode(body),
-          )
-          .timeout(const Duration(seconds: 8));
-
-      if (response.statusCode == 201 || response.statusCode == 200) {
-        Get.snackbar(
-          'Éxito',
-          'Registro guardado correctamente',
-          backgroundColor: brandGreen,
-          colorText: Colors.white,
-          snackPosition: SnackPosition.BOTTOM,
-        );
-
-        // Limpiar formulario
-        _formKey.currentState?.reset();
-        _semanaController.text = _semanaActual().toString();
-        _productoController.clear();
-        _proveedorController.clear();
-        _formulaCController.clear();
-        _catToxicController.clear();
-        _presentacionController.clear();
-        _unidadesController.clear();
-        _loteController.clear();
-        _vencimientoController.clear();
-        _cantidadController.clear();
-        _colorController.clear();
-        _otroColorController.clear();
-        _phController.clear();
-        _densidadController.clear();
-        _obsController.clear();
-        _aseguraController.clear();
-        _autorizaController.clear();
-        setState(() {
-          _aseguraController.text =
-              loginController.loggedInUser.value?['nombres']?.toString() ?? '';
-          if (_administradores.length == 1) {
-            _autorizaController.text = _administradores.first;
-          }
-          _estadoEtiqueta = 'CUMPLE';
-          _estadoTapa = 'CUMPLE';
-          _sellos = 'CUMPLE';
-          _puntosextraccion = 'CUMPLE';
-        });
-      } else {
-        throw Exception('Error de Supabase: ${response.body}');
-      }
-    } on TimeoutException {
-      await OfflineSyncService.enqueue('aseguramiento_plaguicidas', body);
-      Get.snackbar(
-        'Guardado sin internet',
-        'Se sincronizará automáticamente al recuperar conexión',
-      );
-    } on http.ClientException {
-      await OfflineSyncService.enqueue('aseguramiento_plaguicidas', body);
-      Get.snackbar(
-        'Guardado sin internet',
-        'Se sincronizará automáticamente al recuperar conexión',
-      );
-    } on HandshakeException {
-      await OfflineSyncService.enqueue('aseguramiento_plaguicidas', body);
-      Get.snackbar(
-        'Guardado en este dispositivo',
-        'No se pudo validar el certificado de la conexión. El registro se subirá cuando la conexión sea segura.',
-      );
+      // Limpiar formulario
+      _formKey.currentState?.reset();
+      _semanaController.text = _semanaActual().toString();
+      _productoController.clear();
+      _proveedorController.clear();
+      _formulaCController.clear();
+      _catToxicController.clear();
+      _presentacionController.clear();
+      _unidadesController.clear();
+      _loteController.clear();
+      _vencimientoController.clear();
+      _cantidadController.clear();
+      _colorController.clear();
+      _otroColorController.clear();
+      _phController.clear();
+      _densidadController.clear();
+      _obsController.clear();
+      _aseguraController.clear();
+      _autorizaController.clear();
+      setState(() {
+        _aseguraController.text =
+            loginController.loggedInUser.value?['nombres']?.toString() ?? '';
+        _autorizaController.text = _adminAutomatico(_administradores);
+        _estadoEtiqueta = 'CUMPLE';
+        _estadoTapa = 'CUMPLE';
+        _sellos = 'CUMPLE';
+        _puntosextraccion = 'CUMPLE';
+        _firmaAseguraCapturada = null;
+        _firmaAutorizaCapturada = null;
+      });
     } catch (e) {
       final errorServidor = e.toString();
       final errorNormalizado = errorServidor.toLowerCase();
@@ -662,6 +1196,238 @@ class _AseguramientoPageState extends State<AseguramientoPage> {
 
   @override
   Widget build(BuildContext context) {
+    final campos = <String, Widget>{
+      'semana': _buildDropdown<int>(
+        label: _etiquetaCampo('semana'),
+        icon: Icons.calendar_today,
+        values: _semanas,
+        selectedValue: int.tryParse(_semanaController.text),
+        labelForValue: (value) => value.toString(),
+        onChanged:
+            (value) => setState(
+              () => _semanaController.text = value?.toString() ?? '',
+            ),
+      ),
+      'nombre_producto': _buildDropdown<String>(
+        label: _etiquetaCampo('nombre_producto'),
+        icon: Icons.inventory,
+        values: _productos,
+        selectedValue:
+            _productoController.text.isEmpty ? null : _productoController.text,
+        labelForValue: (value) => value,
+        onChanged:
+            (value) => setState(() => _productoController.text = value ?? ''),
+      ),
+      'casa_comercial': _buildDropdown<String>(
+        label: _etiquetaCampo('casa_comercial'),
+        icon: Icons.business,
+        values: _proveedores,
+        selectedValue:
+            _proveedorController.text.isEmpty
+                ? null
+                : _proveedorController.text,
+        labelForValue: (value) => value,
+        onChanged:
+            (value) => setState(() => _proveedorController.text = value ?? ''),
+      ),
+      'presentacion': _buildDropdown<String>(
+        label: _etiquetaCampo('presentacion'),
+        icon: Icons.layers,
+        values: _presentaciones,
+        selectedValue:
+            _presentacionController.text.isEmpty
+                ? null
+                : _presentacionController.text,
+        labelForValue: (value) => value,
+        onChanged:
+            (value) =>
+                setState(() => _presentacionController.text = value ?? ''),
+      ),
+      'total_unidades': _buildNumberInput(
+        _unidadesController,
+        _etiquetaCampo('total_unidades'),
+        Icons.numbers,
+        isDecimal: false,
+      ),
+      'lote': _buildTextField(
+        _loteController,
+        _etiquetaCampo('lote'),
+        Icons.tag,
+      ),
+      'cantidad': _buildNumberInput(
+        _cantidadController,
+        _etiquetaCampo('cantidad'),
+        Icons.scale,
+        isDecimal: false,
+      ),
+      'formula_c': _buildDropdown<String>(
+        label: _etiquetaCampo('formula_c'),
+        icon: Icons.science,
+        values: _formulasC,
+        selectedValue:
+            _formulaCController.text.isEmpty ? null : _formulaCController.text,
+        labelForValue: (value) => value,
+        onChanged:
+            (value) => setState(() => _formulaCController.text = value ?? ''),
+      ),
+      'categoria_toxicologica': _buildDropdown<String>(
+        label: _etiquetaCampo('categoria_toxicologica'),
+        icon: Icons.warning_amber,
+        values: _categoriasToxicologicas,
+        selectedValue:
+            _catToxicController.text.isEmpty ? null : _catToxicController.text,
+        labelForValue: (value) => value,
+        onChanged:
+            (value) => setState(() => _catToxicController.text = value ?? ''),
+      ),
+      'fecha_vencimiento': _buildTextField(
+        _vencimientoController,
+        _etiquetaCampo('fecha_vencimiento'),
+        Icons.event,
+        onTap: () => _selectDate(context),
+        readOnly: true,
+      ),
+      'estado_etiqueta': _buildOptionSelector(
+        _etiquetaCampo('estado_etiqueta'),
+        _estadoEtiqueta,
+        (val) => setState(() => _estadoEtiqueta = val),
+      ),
+      'estado_tapa': _buildOptionSelector(
+        _etiquetaCampo('estado_tapa'),
+        _estadoTapa,
+        (val) => setState(() => _estadoTapa = val),
+      ),
+      'sellos': _buildOptionSelector(
+        _etiquetaCampo('sellos'),
+        _sellos,
+        (val) => setState(() => _sellos = val),
+      ),
+      'puntos_extraccion': _buildOptionSelector(
+        _etiquetaCampo('puntos_extraccion'),
+        _puntosextraccion,
+        (val) => setState(() => _puntosextraccion = val),
+      ),
+      'cumplimiento': Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [_buildCumplimientoSelector()],
+      ),
+      'color': _buildDropdown<String>(
+        label: _etiquetaCampo('color'),
+        icon: Icons.colorize,
+        values: _colores,
+        selectedValue:
+            _colorController.text.isEmpty ? null : _colorController.text,
+        labelForValue: (value) => value,
+        onChanged:
+            (value) => setState(() {
+              _colorController.text = value ?? '';
+              if (value != 'OTRO') _otroColorController.clear();
+            }),
+      ),
+      'otro_color':
+          _colorController.text == 'OTRO'
+              ? _buildTextField(
+                _otroColorController,
+                _etiquetaCampo('otro_color'),
+                Icons.edit,
+              )
+              : const SizedBox.shrink(),
+      'ph': _buildNumberInput(
+        _phController,
+        _etiquetaCampo('ph'),
+        Icons.water_drop,
+        isDecimal: true,
+      ),
+      'densidad': _buildNumberInput(
+        _densidadController,
+        _etiquetaCampo('densidad'),
+        Icons.shutter_speed,
+        isDecimal: true,
+        requiredField: false,
+      ),
+      'observaciones': _buildTextField(
+        _obsController,
+        _etiquetaCampo('observaciones'),
+        Icons.comment,
+        isMultiline: true,
+        requiredField: false,
+      ),
+      'administrador_autoriza':
+          _administradores.length > 1
+              ? _buildDropdown<String>(
+                label: _etiquetaCampo('administrador_autoriza'),
+                icon: Icons.admin_panel_settings,
+                values: _administradores,
+                selectedValue:
+                    _administradores.contains(_autorizaController.text)
+                        ? _autorizaController.text
+                        : null,
+                labelForValue: (value) => value,
+                onChanged:
+                    (value) => setState(() {
+                      _autorizaController.text = value ?? '';
+                      _firmaAutorizaCapturada = null;
+                    }),
+              )
+              : const SizedBox.shrink(),
+      'firma_asegura': _buildCampoFirmaBox(
+        titulo: _etiquetaCampo('firma_asegura'),
+        captura: _capturaFirmaAsegura,
+        firmaVisible:
+            widget.esLectura
+                ? (widget.dataInicial?['firma_asegura_base64']?.toString())
+                : (_capturaFirmaAsegura
+                    ? _firmaAseguraCapturada
+                    : _firmaAseguraPredeterminada),
+        firmaCapturada: _firmaAseguraCapturada,
+        onFirmada: (firma) => _firmaAseguraCapturada = firma,
+      ),
+      'firma_autoriza': _buildCampoFirmaBox(
+        titulo: _etiquetaCampo('firma_autoriza'),
+        captura: _capturaFirmaAutoriza,
+        firmaVisible:
+            widget.esLectura
+                ? (widget.dataInicial?['firma_autoriza_base64']?.toString())
+                : (_capturaFirmaAutoriza
+                    ? _firmaAutorizaCapturada
+                    : _firmaAutorizaPredeterminada),
+        firmaCapturada: _firmaAutorizaCapturada,
+        onFirmada: (firma) => _firmaAutorizaCapturada = firma,
+      ),
+    };
+    const seccionPorCampo = <String, String>{
+      'semana': 'producto',
+      'nombre_producto': 'producto',
+      'casa_comercial': 'producto',
+      'presentacion': 'producto',
+      'total_unidades': 'producto',
+      'lote': 'producto',
+      'cantidad': 'producto',
+      'formula_c': 'producto',
+      'categoria_toxicologica': 'producto',
+      'fecha_vencimiento': 'producto',
+      'estado_etiqueta': 'seguridad',
+      'estado_tapa': 'seguridad',
+      'sellos': 'seguridad',
+      'puntos_extraccion': 'seguridad',
+      'cumplimiento': 'cumplimiento',
+      'color': 'analisis',
+      'otro_color': 'analisis',
+      'ph': 'analisis',
+      'densidad': 'analisis',
+      'observaciones': 'analisis',
+      'administrador_autoriza': 'firmas',
+      'firma_asegura': 'firmas',
+      'firma_autoriza': 'firmas',
+    };
+    final titulosSeccion = <String, String>{
+      'producto': 'DATOS DEL PRODUCTO',
+      'seguridad': 'CARACTERÍSTICAS DE SEGURIDAD',
+      'cumplimiento': _etiquetaCampo('cumplimiento'),
+      'analisis': 'ANÁLISIS FÍSICO-QUÍMICO',
+      'firmas': 'FIRMAS',
+    };
+
     return Scaffold(
       backgroundColor: Colors.white,
 
@@ -741,288 +1507,20 @@ class _AseguramientoPageState extends State<AseguramientoPage> {
             children: [
               _buildHeaderInfo(),
               const SizedBox(height: 20),
-
-              _sectionTitle("DATOS DEL PRODUCTO"),
-              Row(
-                children: [
-                  Expanded(
-                    child: _buildDropdown<int>(
-                      label: 'Semana',
-                      icon: Icons.calendar_today,
-                      values: _semanas,
-                      selectedValue: int.tryParse(_semanaController.text),
-                      labelForValue: (value) => value.toString(),
-                      onChanged:
-                          (value) => setState(
-                            () =>
-                                _semanaController.text =
-                                    value?.toString() ?? '',
-                          ),
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: _buildDropdown<String>(
-                      label: 'Nombre Producto',
-                      icon: Icons.inventory,
-                      values: _productos,
-                      selectedValue:
-                          _productoController.text.isEmpty
-                              ? null
-                              : _productoController.text,
-                      labelForValue: (value) => value,
-                      onChanged:
-                          (value) => setState(
-                            () => _productoController.text = value ?? '',
-                          ),
-                    ),
-                  ),
-                ],
+              ..._construirCamposConFilas(
+                filas: _filasCampos,
+                campos: campos,
+                seccionPorCampo: seccionPorCampo,
+                titulosSeccion: titulosSeccion,
               ),
-
-              _buildDropdown<String>(
-                label: 'Casa Comercial',
-                icon: Icons.business,
-                values: _proveedores,
-                selectedValue:
-                    _proveedorController.text.isEmpty
-                        ? null
-                        : _proveedorController.text,
-                labelForValue: (value) => value,
-                onChanged:
-                    (value) =>
-                        setState(() => _proveedorController.text = value ?? ''),
-              ),
-
-              Row(
-                children: [
-                  Expanded(
-                    child: _buildDropdown<String>(
-                      label: 'Presentación',
-                      icon: Icons.layers,
-                      values: _presentaciones,
-                      selectedValue:
-                          _presentacionController.text.isEmpty
-                              ? null
-                              : _presentacionController.text,
-                      labelForValue: (value) => value,
-                      onChanged:
-                          (value) => setState(
-                            () => _presentacionController.text = value ?? '',
-                          ),
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: _buildNumberInput(
-                      _unidadesController,
-                      'Cantidad',
-                      Icons.numbers,
-                      isDecimal: false, // Entero para unidades físicas
-                    ),
-                  ),
-                ],
-              ),
-
-              Row(
-                children: [
-                  Expanded(
-                    child: _buildTextField(
-                      _loteController,
-                      '# Lote',
-                      Icons.tag, // Texto para permitir códigos de lote
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: _buildNumberInput(
-                      _cantidadController,
-                      'Cantidad (Unidad)',
-                      Icons.scale,
-                      isDecimal: false, // Entero para gramajes exactos
-                    ),
-                  ),
-                ],
-              ),
-
-              Row(
-                children: [
-                  Expanded(
-                    child: _buildDropdown<String>(
-                      label: 'Formula C',
-                      icon: Icons.science,
-                      values: _formulasC,
-                      selectedValue:
-                          _formulaCController.text.isEmpty
-                              ? null
-                              : _formulaCController.text,
-                      labelForValue: (value) => value,
-                      onChanged:
-                          (value) => setState(
-                            () => _formulaCController.text = value ?? '',
-                          ),
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: _buildDropdown<String>(
-                      label: 'Cat Toxic',
-                      icon: Icons.warning_amber,
-                      values: _categoriasToxicologicas,
-                      selectedValue:
-                          _catToxicController.text.isEmpty
-                              ? null
-                              : _catToxicController.text,
-                      labelForValue: (value) => value,
-                      onChanged:
-                          (value) => setState(
-                            () => _catToxicController.text = value ?? '',
-                          ),
-                    ),
-                  ),
-                ],
-              ),
-
-              _buildTextField(
-                _vencimientoController,
-                'Fecha de Vencimiento',
-                Icons.event,
-                onTap:
-                    () => _selectDate(
-                      context,
-                    ), // Aquí le decimos que abra el calendario
-                readOnly: true, // Aquí le decimos que no abra el teclado
-              ),
-
-              _sectionTitle("CARACTERÍSTICAS DE SEGURIDAD"),
-              _buildOptionSelector(
-                "Estado Etiqueta",
-                _estadoEtiqueta,
-                (val) => setState(() => _estadoEtiqueta = val),
-              ),
-              _buildOptionSelector(
-                "Estado Tapa",
-                _estadoTapa,
-                (val) => setState(() => _estadoTapa = val),
-              ),
-              _buildOptionSelector(
-                "Sellos",
-                _sellos,
-                (val) => setState(() => _sellos = val),
-              ),
-              _buildOptionSelector(
-                "Puntos Extracción",
-                _puntosextraccion,
-                (val) => setState(() => _puntosextraccion = val),
-              ),
-
-              _sectionTitle("CUMPLIMIENTO"),
-              _buildCumplimientoSelector(),
-
-              _sectionTitle("ANÁLISIS FÍSICO-QUÍMICO"),
-              _buildDropdown<String>(
-                label: 'Color',
-                icon: Icons.colorize,
-                values: _colores,
-                selectedValue:
-                    _colorController.text.isEmpty
-                        ? null
-                        : _colorController.text,
-                labelForValue: (value) => value,
-                onChanged:
-                    (value) => setState(() {
-                      _colorController.text = value ?? '';
-                      if (value != 'OTRO') _otroColorController.clear();
-                    }),
-              ),
-              if (_colorController.text == 'OTRO')
-                _buildTextField(
-                  _otroColorController,
-                  'Especifique el color',
-                  Icons.edit,
-                ),
-
-              Row(
-                children: [
-                  Expanded(
-                    child: _buildNumberInput(
-                      _phController,
-                      'pH',
-                      Icons.water_drop,
-                      isDecimal: true,
-                      requiredField: false, // ahora opcional
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: _buildNumberInput(
-                      _densidadController,
-                      'Densidad',
-                      Icons.shutter_speed,
-                      isDecimal: true,
-                      requiredField: false, // ahora opcional
-                    ),
-                  ),
-                ],
-              ),
-
-              _buildTextField(
-                _obsController,
-                'Observaciones',
-                Icons.comment,
-                isMultiline: true,
-                requiredField: false,
-              ),
-              _buildTextField(
-                _aseguraController,
-                'Quién asegura',
-                Icons.verified_user,
-                readOnly: true,
-              ),
-              _vistaFirma(
-                _firmasPorIdentificacion[loginController
-                            .loggedInUser
-                            .value?['identificacion']
-                            ?.toString() ??
-                        ''] ??
-                    widget.dataInicial?['firma_asegura_base64']?.toString(),
-                'Firma de quien asegura',
-              ),
-              if (_administradores.length > 1)
-                _buildDropdown<String>(
-                  label: 'Quién autoriza',
-                  icon: Icons.admin_panel_settings,
-                  values: _administradores,
-                  selectedValue:
-                      _administradores.contains(_autorizaController.text)
-                          ? _autorizaController.text
-                          : null,
-                  labelForValue: (value) => value,
-                  onChanged:
-                      (value) => setState(
-                        () => _autorizaController.text = value ?? '',
-                      ),
-                )
-              else
-                _buildTextField(
-                  _autorizaController,
-                  'Quién autoriza',
-                  Icons.admin_panel_settings,
-                  readOnly: _administradores.length == 1,
-                ),
-              _vistaFirma(
-                _firmaAdministradorSeleccionado() ??
-                    widget.dataInicial?['firma_autoriza_base64']?.toString(),
-                'Firma de quien autoriza',
-              ),
-
               const SizedBox(height: 30),
               if (!widget
                   .esLectura) // Solo muestra el botón si NO es modo lectura
                 _isSaving
                     ? const Center(child: CircularProgressIndicator())
                     : ElevatedButton.icon(
-                      onPressed: _guardarEnBaseDeDatos,
+                      onPressed:
+                          _firmasManualesListas ? _guardarEnBaseDeDatos : null,
                       icon: const Icon(Icons.cloud_upload, color: Colors.white),
                       label: const Text(
                         "GUARDAR REGISTRO",
@@ -1371,4 +1869,31 @@ class _AseguramientoPageState extends State<AseguramientoPage> {
       ),
     );
   }
+}
+
+class _FirmaPainter extends CustomPainter {
+  final List<Offset?> strokes;
+  const _FirmaPainter(this.strokes);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    canvas.drawColor(Colors.white, BlendMode.src);
+    final paint =
+        Paint()
+          ..color = const Color(0xFF17324D)
+          ..strokeWidth = 3
+          ..strokeCap = StrokeCap.round
+          ..style = PaintingStyle.stroke;
+
+    for (var index = 0; index < strokes.length - 1; index++) {
+      final start = strokes[index];
+      final end = strokes[index + 1];
+      if (start != null && end != null) {
+        canvas.drawLine(start, end, paint);
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _FirmaPainter oldDelegate) => true;
 }

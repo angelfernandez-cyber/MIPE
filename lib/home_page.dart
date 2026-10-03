@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
-import 'package:simple_barcode_scanner/simple_barcode_scanner.dart';
 import 'login_controller.dart';
+import 'password_dialog.dart';
 import 'formulario_page.dart';
 import 'dart:async';
 import 'package:flutter/services.dart';
@@ -63,7 +63,8 @@ class _HomePageState extends State<HomePage> {
       if (!mounted) return;
       setState(() {
         _visitorCode = result['codigo'].toString();
-        _visitorCodeSeconds = int.tryParse('${result['cambia_en_segundos']}') ?? 60;
+        _visitorCodeSeconds =
+            int.tryParse('${result['cambia_en_segundos']}') ?? 60;
         _visitorCodeStatus = 'Cambia en $_visitorCodeSeconds s';
       });
     } catch (e) {
@@ -72,9 +73,10 @@ class _HomePageState extends State<HomePage> {
       setState(() {
         _visitorCode = '······';
         _visitorCodeSeconds = 60;
-        _visitorCodeStatus = error.contains('Confirma tu contraseña')
-            ? 'Toca para confirmar tu contraseña'
-            : error;
+        _visitorCodeStatus =
+            error.contains('Confirma tu contraseña')
+                ? 'Toca para confirmar tu contraseña'
+                : error;
       });
     } finally {
       if (mounted) setState(() => _loadingVisitorCode = false);
@@ -82,26 +84,9 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _confirmarClaveParaCodigo() async {
-    final controller = TextEditingController();
-    final clave = await Get.dialog<String>(
-      AlertDialog(
-        title: const Text('Confirmar administrador'),
-        content: TextField(
-          controller: controller,
-          obscureText: true,
-          autofocus: true,
-          decoration: const InputDecoration(labelText: 'Contraseña actual'),
-        ),
-        actions: [
-          TextButton(onPressed: Get.back, child: const Text('Cancelar')),
-          FilledButton(
-            onPressed: () => Get.back(result: controller.text),
-            child: const Text('Continuar'),
-          ),
-        ],
-      ),
+    final clave = await pedirPasswordDialog(
+      titulo: 'Confirmar administrador',
     );
-    controller.dispose();
     if (clave != null && clave.isNotEmpty) {
       await _actualizarCodigoVisitante(password: clave);
     }
@@ -115,14 +100,23 @@ class _HomePageState extends State<HomePage> {
         color: Colors.white,
         borderRadius: BorderRadius.circular(22),
         border: Border.all(color: const Color(0xFF168B59).withOpacity(0.18)),
-        boxShadow: [BoxShadow(color: const Color(0xFF168B59).withOpacity(0.08), blurRadius: 18, offset: const Offset(0, 7))],
+        boxShadow: [
+          BoxShadow(
+            color: const Color(0xFF168B59).withOpacity(0.08),
+            blurRadius: 18,
+            offset: const Offset(0, 7),
+          ),
+        ],
       ),
       child: Row(
         children: [
           Container(
             width: 48,
             height: 48,
-            decoration: BoxDecoration(color: const Color(0xFF168B59).withOpacity(0.1), borderRadius: BorderRadius.circular(15)),
+            decoration: BoxDecoration(
+              color: const Color(0xFF168B59).withOpacity(0.1),
+              borderRadius: BorderRadius.circular(15),
+            ),
             child: const Icon(Icons.key_rounded, color: Color(0xFF168B59)),
           ),
           const SizedBox(width: 13),
@@ -130,51 +124,58 @@ class _HomePageState extends State<HomePage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('CÓDIGO DE VISITANTE', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: Colors.blueGrey.shade600, letterSpacing: 0.7)),
+                Text(
+                  'CÓDIGO DE VISITANTE',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w800,
+                    color: Colors.blueGrey.shade600,
+                    letterSpacing: 0.7,
+                  ),
+                ),
                 const SizedBox(height: 4),
-                Text(_visitorCode, style: const TextStyle(fontSize: 25, fontWeight: FontWeight.w900, color: Color(0xFF17324D), letterSpacing: 4)),
-                Text(_visitorCodeStatus, style: const TextStyle(fontSize: 11, color: Color(0xFF168B59))),
+                Text(
+                  _visitorCode,
+                  style: const TextStyle(
+                    fontSize: 25,
+                    fontWeight: FontWeight.w900,
+                    color: Color(0xFF17324D),
+                    letterSpacing: 4,
+                  ),
+                ),
+                Text(
+                  _visitorCodeStatus,
+                  style: const TextStyle(
+                    fontSize: 11,
+                    color: Color(0xFF168B59),
+                  ),
+                ),
               ],
             ),
           ),
           IconButton(
             tooltip: 'Actualizar código',
-            onPressed: _loadingVisitorCode
-                ? null
-                : loginController.passwordEnMemoria == null
+            onPressed:
+                _loadingVisitorCode
+                    ? null
+                    : loginController.passwordEnMemoria == null
                     ? _confirmarClaveParaCodigo
                     : _actualizarCodigoVisitante,
-            icon: _loadingVisitorCode
-                ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
-                : const Icon(Icons.refresh_rounded, color: Color(0xFF168B59)),
+            icon:
+                _loadingVisitorCode
+                    ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                    : const Icon(
+                      Icons.refresh_rounded,
+                      color: Color(0xFF168B59),
+                    ),
           ),
         ],
       ),
     );
-  }
-
-  Future<void> _scanBarcode() async {
-    var res = await Navigator.push(
-      context,
-      MaterialPageRoute(builder: (context) => const SimpleBarcodeScannerPage()),
-    );
-
-    if (res != null && res != "-1") {
-      String codigoLimpio = res.toString().trim();
-      int? numeroBloque = int.tryParse(codigoLimpio);
-
-      if (numeroBloque == null || numeroBloque < 401 || numeroBloque > 445) {
-        Get.snackbar(
-          "BLOQUE NO REGISTRADO",
-          "El código '$codigoLimpio' no pertenece al rango permitido (401-445).",
-          backgroundColor: Colors.redAccent,
-          colorText: Colors.white,
-        );
-        return;
-      }
-
-      _procesarEntradaBloque(codigoLimpio);
-    }
   }
 
   Set<String> _obtenerModulos() {
@@ -188,207 +189,12 @@ class _HomePageState extends State<HomePage> {
   }
 
   bool _esAdministradorPrincipal() {
-    return loginController.loggedInUser.value?['admin']?.toString().trim() == 'S';
+    return loginController.loggedInUser.value?['admin']?.toString().trim() ==
+        'S';
   }
 
   void _editarCuentaAdministrador() {
-    final identificacionCtrl = TextEditingController(
-      text: loginController.loggedInUser.value?['identificacion']?.toString() ?? '',
-    );
-    final passwordCtrl = TextEditingController();
-    bool ocultarPassword = true;
-
-    Get.dialog(
-      StatefulBuilder(
-        builder: (context, setDialogState) => Dialog(
-          backgroundColor: Colors.transparent,
-          insetPadding: const EdgeInsets.symmetric(horizontal: 22, vertical: 28),
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 430),
-            child: Container(
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(28),
-                boxShadow: [
-                  BoxShadow(
-                    color: const Color(0xFF15334A).withOpacity(0.22),
-                    blurRadius: 28,
-                    offset: const Offset(0, 14),
-                  ),
-                ],
-              ),
-              clipBehavior: Clip.antiAlias,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.fromLTRB(22, 22, 18, 22),
-                    decoration: const BoxDecoration(
-                      gradient: LinearGradient(
-                        colors: [Color(0xFF159A68), Color(0xFF08734E)],
-                        begin: Alignment.topLeft,
-                        end: Alignment.bottomRight,
-                      ),
-                    ),
-                    child: Row(
-                      children: [
-                        Container(
-                          width: 52,
-                          height: 52,
-                          decoration: BoxDecoration(
-                            color: Colors.white.withOpacity(0.18),
-                            borderRadius: BorderRadius.circular(17),
-                          ),
-                          child: const Icon(Icons.manage_accounts_rounded, color: Colors.white, size: 30),
-                        ),
-                        const SizedBox(width: 14),
-                        const Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text('Mi cuenta', style: TextStyle(color: Colors.white, fontSize: 21, fontWeight: FontWeight.w800)),
-                              SizedBox(height: 3),
-                              Text('Administrador', style: TextStyle(color: Colors.white70, fontSize: 13)),
-                            ],
-                          ),
-                        ),
-                        IconButton(
-                          onPressed: Get.back,
-                          icon: const Icon(Icons.close_rounded, color: Colors.white70),
-                        ),
-                      ],
-                    ),
-                  ),
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(22, 20, 22, 22),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text('Actualiza tus datos de acceso.', style: TextStyle(color: Colors.blueGrey.shade700, fontSize: 14)),
-                        const SizedBox(height: 18),
-                        TextField(
-                          controller: identificacionCtrl,
-                          textInputAction: TextInputAction.next,
-                          decoration: InputDecoration(
-                            labelText: 'Usuario',
-                            prefixIcon: const Icon(Icons.person_outline_rounded),
-                            filled: true,
-                            fillColor: const Color(0xFFF4F7F8),
-                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(15), borderSide: BorderSide.none),
-                          ),
-                        ),
-                        const SizedBox(height: 13),
-                        TextField(
-                          controller: passwordCtrl,
-                          obscureText: ocultarPassword,
-                          decoration: InputDecoration(
-                            labelText: 'Nueva contraseña',
-                            prefixIcon: const Icon(Icons.lock_outline_rounded),
-                            suffixIcon: IconButton(
-                              onPressed: () => setDialogState(() => ocultarPassword = !ocultarPassword),
-                              icon: Icon(ocultarPassword ? Icons.visibility_off_rounded : Icons.visibility_rounded),
-                            ),
-                            filled: true,
-                            fillColor: const Color(0xFFF4F7F8),
-                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(15), borderSide: BorderSide.none),
-                          ),
-                        ),
-                        const SizedBox(height: 22),
-                        Row(
-                          children: [
-                            Expanded(
-                              child: OutlinedButton(
-                                onPressed: Get.back,
-                                style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 14), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14))),
-                                child: const Text('Cancelar'),
-                              ),
-                            ),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: FilledButton.icon(
-                                onPressed: () async {
-                                  final nuevoUsuario = identificacionCtrl.text.trim();
-                                  final nuevaPassword = passwordCtrl.text;
-                                  if (nuevoUsuario.isEmpty || nuevaPassword.isEmpty) {
-                                    Get.snackbar('Datos incompletos', 'Escribe el usuario y la nueva contraseña.');
-                                    return;
-                                  }
-                                  final ok = await loginController.actualizarCuentaAdministrador(
-                                    nuevaIdentificacion: nuevoUsuario,
-                                    nuevaPassword: nuevaPassword,
-                                  );
-                                  if (ok) {
-                                    Get.back();
-                                    Get.snackbar('Cuenta actualizada', 'Tus datos de acceso fueron cambiados.');
-                                  } else {
-                                    Get.snackbar('No se pudo guardar', 'Revisa que el usuario no esté en uso e intenta de nuevo.');
-                                  }
-                                },
-                                icon: const Icon(Icons.check_rounded),
-                                label: const Text('Guardar'),
-                                style: FilledButton.styleFrom(
-                                  backgroundColor: const Color(0xFF12885C),
-                                  padding: const EdgeInsets.symmetric(vertical: 14),
-                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
-      ),
-    ).whenComplete(() {
-      identificacionCtrl.dispose();
-      passwordCtrl.dispose();
-    });
-  }
-
-  Future<void> _procesarEntradaBloque(String bloque) async {
-    Get.dialog(
-      const Center(child: CircularProgressIndicator()),
-      barrierDismissible: false,
-    );
-
-    try {
-      final url = Uri.parse(
-        '${loginController.supabaseUrl}/rest/v1/aspersiones?bloque=eq.$bloque&select=*&order=id.desc&limit=1',
-      );
-
-      final datos = await OfflineSyncService.fetchListWithCache(
-        cacheKey: 'cache_aspersiones_bloque_$bloque',
-        url: url,
-        headers: {
-          'apikey': loginController.apiKey,
-          'Authorization': 'Bearer ${loginController.apiKey}',
-        },
-      );
-
-      Get.back();
-
-      if (datos.isNotEmpty) {
-        Get.to(
-          () => const FormularioPage(),
-          arguments: {
-            ...Map<String, dynamic>.from(datos[0]),
-            'esLecturaForzada': true,
-          },
-        );
-      } else {
-        Get.to(() => const FormularioPage(), arguments: {'bloque': bloque});
-      }
-    } catch (e) {
-      Get.back();
-      Get.snackbar("Error", "Verifica tu conexión");
-    }
+    Get.dialog(const _MiCuentaDialog());
   }
 
   @override
@@ -405,169 +211,171 @@ class _HomePageState extends State<HomePage> {
               await Future.delayed(const Duration(milliseconds: 700));
             },
             child: CustomScrollView(
-          slivers: [
-            SliverAppBar(
-              expandedHeight: 150.0,
-              pinned: true,
-              backgroundColor: darkBlue,
-              elevation: 0,
-              title: const Text(
-                "LA PLANICIE",
-                style: TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.bold,
-                  letterSpacing: 3,
-                  color: Colors.white70,
-                ),
-              ),
-              flexibleSpace: FlexibleSpaceBar(
-                background: Container(
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(colors: [brandBlue, darkBlue]),
-                    borderRadius: const BorderRadius.only(
-                      bottomLeft: Radius.circular(50),
+              slivers: [
+                SliverAppBar(
+                  expandedHeight: 150.0,
+                  pinned: true,
+                  backgroundColor: darkBlue,
+                  elevation: 0,
+                  title: const Text(
+                    "LA PLANICIE",
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 3,
+                      color: Colors.white70,
                     ),
-                    boxShadow: [
-                      BoxShadow(
-                        color: darkBlue.withOpacity(0.4),
-                        blurRadius: 20,
-                        offset: const Offset(0, 10),
-                      ),
-                    ],
                   ),
-                  child: Stack(
-                    children: [
-                      Positioned(
-                        top: -40,
-                        left: -40,
-                        child: CircleAvatar(
-                          radius: 80,
-                          backgroundColor: Colors.white.withOpacity(0.05),
+                  flexibleSpace: FlexibleSpaceBar(
+                    background: Container(
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(colors: [brandBlue, darkBlue]),
+                        borderRadius: const BorderRadius.only(
+                          bottomLeft: Radius.circular(50),
+                        ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: darkBlue.withOpacity(0.4),
+                            blurRadius: 20,
+                            offset: const Offset(0, 10),
+                          ),
+                        ],
+                      ),
+                      child: Stack(
+                        children: [
+                          Positioned(
+                            top: -40,
+                            left: -40,
+                            child: CircleAvatar(
+                              radius: 80,
+                              backgroundColor: Colors.white.withOpacity(0.05),
+                            ),
+                          ),
+                          Positioned(
+                            bottom: 20,
+                            right: -30,
+                            child: CircleAvatar(
+                              radius: 60,
+                              backgroundColor: Colors.white.withOpacity(0.05),
+                            ),
+                          ),
+                          _buildUserInfoContent(),
+                        ],
+                      ),
+                    ),
+                  ),
+                  actions: [
+                    Container(
+                      margin: const EdgeInsets.only(right: 15),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withOpacity(0.15),
+                        shape: BoxShape.circle,
+                        border: Border.all(
+                          color: Colors.white.withOpacity(0.3),
                         ),
                       ),
-                      Positioned(
-                        bottom: 20,
-                        right: -30,
-                        child: CircleAvatar(
-                          radius: 60,
-                          backgroundColor: Colors.white.withOpacity(0.05),
+                      child: IconButton(
+                        icon: const Icon(
+                          Icons.info_outline,
+                          color: Colors.white,
                         ),
+                        onPressed: () => _showDevDialog(context),
                       ),
-                      _buildUserInfoContent(),
-                    ],
-                  ),
+                    ),
+                  ],
                 ),
-              ),
-              actions: [
-                Container(
-                  margin: const EdgeInsets.only(right: 15),
-                  decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.15),
-                    shape: BoxShape.circle,
-                    border: Border.all(color: Colors.white.withOpacity(0.3)),
-                  ),
-                  child: IconButton(
-                    icon: const Icon(Icons.info_outline, color: Colors.white),
-                    onPressed: () => _showDevDialog(context),
+
+                SliverToBoxAdapter(
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 30, 20, 20),
+                    child: Column(
+                      children: [
+                        if (_esAdministradorPrincipal())
+                          _buildVisitorCodeCard(),
+                        const SizedBox(height: 20),
+                        if (lectura.contains("mapa"))
+                          _buildActionCard(
+                            title: "MAPA DE BLOQUES",
+                            subtitle: "Control De Aspersion",
+                            icon: Icons.map_rounded,
+                            gradient: [brandGreen, const Color(0xFF158A3E)],
+                            onTap: () => Get.toNamed('/consultaexcel'),
+                          ),
+                        const SizedBox(height: 20),
+                        if (lectura.contains("almacen"))
+                          _buildActionCard(
+                            title: "ALMACEN",
+                            subtitle: "Control De Entrada De Plaguicidas",
+                            icon: Icons.storage_rounded,
+                            gradient: [
+                              const Color(0xFF38158A),
+                              const Color(0xFF38158A),
+                            ],
+                            onTap: () => Get.toNamed('/historialaseguramiento'),
+                          ),
+                        if (lectura.contains('almacen') &&
+                            !loginController.esVisitante) ...[
+                          const SizedBox(height: 14),
+                          _buildActionCard(
+                            title: 'MI FIRMA',
+                            subtitle: 'Registrar o actualizar mi firma',
+                            icon: Icons.draw_rounded,
+                            gradient: [
+                              const Color.fromARGB(255, 72, 61, 216),
+                              const Color.fromARGB(255, 97, 90, 192),
+                            ],
+                            onTap: () => Get.toNamed('/mi-firma'),
+                          ),
+                        ],
+                        if (_esAdministradorPrincipal()) ...[
+                          const SizedBox(height: 20),
+                          _buildActionCard(
+                            title: "GESTIÓN DE LISTAS",
+                            subtitle: "Listas desplegables",
+                            icon: Icons.list_alt_rounded,
+                            gradient: [
+                              const Color(0xFF008DC5),
+                              const Color(0xFF005F86),
+                            ],
+                            onTap: () => Get.to(() => const CatalogosPage()),
+                          ),
+                        ],
+                        if (_esAdministradorPrincipal() ||
+                            lectura.contains('administracion')) ...[
+                          const SizedBox(height: 20),
+                          _buildActionCard(
+                            title: "ADMINISTRACIÓN",
+                            subtitle: "Panel de control de personal",
+                            icon: Icons.admin_panel_settings_rounded,
+                            gradient: [
+                              const Color(0xFF455A64),
+                              const Color(0xFF263238),
+                            ],
+                            onTap: () => Get.toNamed('/gestusu'),
+                          ),
+                        ],
+                        if (_esAdministradorPrincipal() ||
+                            lectura.contains('respaldo')) ...[
+                          const SizedBox(height: 20),
+                          _buildActionCard(
+                            title: "RESPALDO Y LIMPIEZA",
+                            subtitle: "Borrar y respaldar datos",
+                            icon: Icons.backup_rounded,
+                            gradient: [
+                              const Color(0xFF8B1E2D),
+                              const Color(0xFF5B111C),
+                            ],
+                            onTap: () => Get.toNamed('/respaldo-limpieza'),
+                          ),
+                        ],
+                        const SizedBox(height: 50),
+                        _buildLogoutButton(),
+                        const SizedBox(height: 50),
+                      ],
+                    ),
                   ),
                 ),
               ],
-            ),
-
-            SliverToBoxAdapter(
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(20, 30, 20, 20),
-                child: Column(
-                  children: [
-                    if (_esAdministradorPrincipal()) _buildVisitorCodeCard(),
-                    if (lectura.contains("scanner"))
-                      _buildActionCard(
-                        title: "ESCÁNER QR",
-                        subtitle: "búsqueda rápida por bloque",
-                        icon: Icons.qr_code_scanner_rounded,
-                        gradient: [brandBlue, darkBlue],
-                        onTap: _scanBarcode,
-                      ),
-                    const SizedBox(height: 20),
-                    if (lectura.contains("mapa"))
-                      _buildActionCard(
-                        title: "MAPA DE BLOQUES",
-                        subtitle: "Control De Aspersion",
-                        icon: Icons.map_rounded,
-                        gradient: [brandGreen, const Color(0xFF158A3E)],
-                        onTap: () => Get.toNamed('/consultaexcel'),
-                      ),
-                    const SizedBox(height: 20),
-                    if (lectura.contains("almacen"))
-                      _buildActionCard(
-                        title: "ALMACEN",
-                        subtitle: "Control De Entrada De Plaguicidas",
-                        icon: Icons.storage_rounded,
-                        gradient: [
-                          const Color(0xFF38158A),
-                          const Color(0xFF38158A),
-                        ],
-                        onTap: () => Get.toNamed('/historialaseguramiento'),
-                      ),
-                    if (lectura.contains('almacen') && !loginController.esVisitante) ...[
-                      const SizedBox(height: 14),
-                      _buildActionCard(
-                        title: 'MI FIRMA',
-                        subtitle: 'Registrar o actualizar mi firma',
-                        icon: Icons.draw_rounded,
-                        gradient: [
-                          const Color(0xFF008DC5),
-                          const Color(0xFF005F86),
-                        ],
-                        onTap: () => Get.toNamed('/mi-firma'),
-                      ),
-                    ],
-                    if (_esAdministradorPrincipal()) ...[
-                      const SizedBox(height: 20),
-                      _buildActionCard(
-                        title: "GESTIÓN DE LISTAS",
-                        subtitle: "Opciones de formularios desplegables",
-                        icon: Icons.list_alt_rounded,
-                        gradient: [
-                          const Color(0xFF008DC5),
-                          const Color(0xFF005F86),
-                        ],
-                        onTap: () => Get.to(() => const CatalogosPage()),
-                      ),
-                    ],
-                    if (_esAdministradorPrincipal() ||
-                      lectura.contains('administracion')) ...[
-                      const SizedBox(height: 20),
-                      _buildActionCard(
-                        title: "ADMINISTRACIÓN",
-                        subtitle: "Panel de control de personal",
-                        icon: Icons.admin_panel_settings_rounded,
-                        gradient: [
-                          const Color(0xFF455A64),
-                          const Color(0xFF263238),
-                        ],
-                        onTap: () => Get.toNamed('/gestusu'),
-                      ),
-                    ],
-                    if (_esAdministradorPrincipal() ||
-                        lectura.contains('respaldo')) ...[
-                      const SizedBox(height: 20),
-                      _buildActionCard(
-                        title: "RESPALDO Y LIMPIEZA",
-                        subtitle: "Borrar y respaldar datos",
-                        icon: Icons.backup_rounded,
-                        gradient: [const Color(0xFF8B1E2D), const Color(0xFF5B111C)],
-                        onTap: () => Get.toNamed('/respaldo-limpieza'),
-                      ),
-                    ],
-                    const SizedBox(height: 50),
-                    _buildLogoutButton(),
-                    const SizedBox(height: 50),
-                  ],
-                ),
-              ),
-            ),
-          ],
             ),
           ),
           if (_esAdministradorPrincipal())
@@ -589,9 +397,15 @@ class _HomePageState extends State<HomePage> {
                       height: 58,
                       decoration: BoxDecoration(
                         borderRadius: BorderRadius.circular(18),
-                        border: Border.all(color: const Color(0xFF168B59).withOpacity(0.28)),
+                        border: Border.all(
+                          color: const Color(0xFF168B59).withOpacity(0.28),
+                        ),
                       ),
-                      child: const Icon(Icons.manage_accounts_rounded, color: Color(0xFF168B59), size: 28),
+                      child: const Icon(
+                        Icons.manage_accounts_rounded,
+                        color: Color(0xFF168B59),
+                        size: 28,
+                      ),
                     ),
                   ),
                 ),
@@ -892,245 +706,254 @@ class _HomePageState extends State<HomePage> {
   void _showDevDialog(BuildContext context) {
     showDialog(
       context: context,
-      builder: (_) => Dialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(25)),
-        child: Container(
-          padding: const EdgeInsets.all(22),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(25),
-            gradient: const LinearGradient(
-              colors: [Color(0xFF008DC5), Color(0xFF005F86)],
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
+      builder:
+          (_) => Dialog(
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(25),
             ),
-          ),
-
-          child: Stack(
-            children: [
-              // 🌸 CLAVEL SUPERIOR
-              Positioned(
-                top: -15,
-                right: -10,
-                child: Opacity(
-                  opacity: 0.14,
-                  child: Transform.rotate(
-                    angle: 0.3,
-                    child: const Icon(
-                      Icons.local_florist_rounded,
-                      size: 95,
-                      color: Colors.white,
-                    ),
-                  ),
+            child: Container(
+              padding: const EdgeInsets.all(22),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(25),
+                gradient: const LinearGradient(
+                  colors: [Color(0xFF008DC5), Color(0xFF005F86)],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
                 ),
               ),
 
-              // 🌸 CLAVEL INFERIOR
-              Positioned(
-                bottom: -18,
-                left: -10,
-                child: Opacity(
-                  opacity: 0.10,
-                  child: Transform.rotate(
-                    angle: -0.4,
-                    child: const Icon(
-                      Icons.local_florist_rounded,
-                      size: 85,
-                      color: Colors.white,
-                    ),
-                  ),
-                ),
-              ),
-
-              Column(
-                mainAxisSize: MainAxisSize.min,
+              child: Stack(
                 children: [
-                  // ICONO
-                  Container(
-                    padding: const EdgeInsets.all(15),
-                    decoration: BoxDecoration(
-                      color: Colors.white.withOpacity(0.15),
-                      shape: BoxShape.circle,
-                    ),
-                    child: const Icon(
-                      Icons.code_rounded,
-                      color: Colors.white,
-                      size: 45,
-                    ),
-                  ),
-
-                  const SizedBox(height: 18),
-
-                  // TITULO
-                  const Text(
-                    "DESARROLLADOR",
-                    style: TextStyle(
-                      color: Colors.white70,
-                      fontSize: 13,
-                      letterSpacing: 2,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-
-                  const SizedBox(height: 8),
-
-                  // NOMBRE
-                  const Text(
-                    "ANGEL FERNANDEZ",
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 22,
-                      fontWeight: FontWeight.w900,
-                    ),
-                  ),
-
-                  const SizedBox(height: 6),
-
-                  // CARGO
-                  const Text(
-                    "PASANTE DE SISTEMAS",
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      color: Colors.white70,
-                      fontSize: 12,
-                      letterSpacing: 1.5,
-                      fontWeight: FontWeight.w500,
-                    ),
-                  ),
-
-                  const SizedBox(height: 20),
-
-                  // TELEFONO
-                  InkWell(
-                    borderRadius: BorderRadius.circular(12),
-                    onTap: () async {
-                      await Clipboard.setData(
-                        const ClipboardData(text: '3028329414'),
-                      );
-
-                      Get.snackbar(
-                        "Copiado",
-                        "Número copiado al portapapeles",
-                        backgroundColor: Colors.green,
-                        colorText: Colors.white,
-                        snackPosition: SnackPosition.BOTTOM,
-                      );
-                    },
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 14,
-                        vertical: 12,
-                      ),
-                      decoration: BoxDecoration(
-                        color: Colors.white.withOpacity(0.12),
-                        borderRadius: BorderRadius.circular(14),
-                        border: Border.all(color: Colors.white24),
-                      ),
-                      child: Row(
-                        children: const [
-                          Icon(FontAwesomeIcons.whatsapp, color: Colors.white),
-
-                          SizedBox(width: 12),
-
-                          Expanded(
-                            child: Text(
-                              "WhatsApp: 302 8329414",
-                              style: TextStyle(
-                                color: Colors.white,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ),
-
-                          Icon(Icons.copy, color: Colors.white70, size: 18),
-                        ],
-                      ),
-                    ),
-                  ),
-
-                  const SizedBox(height: 12),
-
-                  // CORREO
-                  InkWell(
-                    borderRadius: BorderRadius.circular(12),
-                    onTap: () async {
-                      await Clipboard.setData(
-                        const ClipboardData(
-                          text: 'angel.manuel.fernandez2005@gmail.com',
-                        ),
-                      );
-
-                      Get.snackbar(
-                        "Copiado",
-                        "Correo copiado al portapapeles",
-                        backgroundColor: Colors.green,
-                        colorText: Colors.white,
-                        snackPosition: SnackPosition.BOTTOM,
-                      );
-                    },
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 14,
-                        vertical: 12,
-                      ),
-                      decoration: BoxDecoration(
-                        color: Colors.white.withOpacity(0.12),
-                        borderRadius: BorderRadius.circular(14),
-                        border: Border.all(color: Colors.white24),
-                      ),
-                      child: Row(
-                        children: const [
-                          Icon(FontAwesomeIcons.envelope, color: Colors.white),
-
-                          SizedBox(width: 12),
-
-                          Expanded(
-                            child: Text(
-                              "angel.manuel.fernandez2005@gmail.com",
-                              style: TextStyle(
-                                color: Colors.white,
-                                fontSize: 13,
-                                fontWeight: FontWeight.w500,
-                              ),
-                            ),
-                          ),
-
-                          Icon(Icons.copy, color: Colors.white70, size: 18),
-                        ],
-                      ),
-                    ),
-                  ),
-
-                  const SizedBox(height: 22),
-
-                  // BOTON
-                  SizedBox(
-                    width: double.infinity,
-                    child: ElevatedButton(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.white,
-                        foregroundColor: const Color(0xFF008DC5),
-                        padding: const EdgeInsets.symmetric(vertical: 14),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(14),
+                  // 🌸 CLAVEL SUPERIOR
+                  Positioned(
+                    top: -15,
+                    right: -10,
+                    child: Opacity(
+                      opacity: 0.14,
+                      child: Transform.rotate(
+                        angle: 0.3,
+                        child: const Icon(
+                          Icons.local_florist_rounded,
+                          size: 95,
+                          color: Colors.white,
                         ),
                       ),
-                      onPressed: () => Get.back(),
-                      child: const Text(
-                        "CERRAR",
+                    ),
+                  ),
+
+                  // 🌸 CLAVEL INFERIOR
+                  Positioned(
+                    bottom: -18,
+                    left: -10,
+                    child: Opacity(
+                      opacity: 0.10,
+                      child: Transform.rotate(
+                        angle: -0.4,
+                        child: const Icon(
+                          Icons.local_florist_rounded,
+                          size: 85,
+                          color: Colors.white,
+                        ),
+                      ),
+                    ),
+                  ),
+
+                  Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      // ICONO
+                      Container(
+                        padding: const EdgeInsets.all(15),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withOpacity(0.15),
+                          shape: BoxShape.circle,
+                        ),
+                        child: const Icon(
+                          Icons.code_rounded,
+                          color: Colors.white,
+                          size: 45,
+                        ),
+                      ),
+
+                      const SizedBox(height: 18),
+
+                      // TITULO
+                      const Text(
+                        "DESARROLLADOR",
                         style: TextStyle(
+                          color: Colors.white70,
+                          fontSize: 13,
+                          letterSpacing: 2,
                           fontWeight: FontWeight.bold,
-                          letterSpacing: 1,
                         ),
                       ),
-                    ),
+
+                      const SizedBox(height: 8),
+
+                      // NOMBRE
+                      const Text(
+                        "ANGEL FERNANDEZ",
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 22,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+
+                      const SizedBox(height: 6),
+
+                      // CARGO
+                      const Text(
+                        "PASANTE DE SISTEMAS",
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          color: Colors.white70,
+                          fontSize: 12,
+                          letterSpacing: 1.5,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+
+                      const SizedBox(height: 20),
+
+                      // TELEFONO
+                      InkWell(
+                        borderRadius: BorderRadius.circular(12),
+                        onTap: () async {
+                          await Clipboard.setData(
+                            const ClipboardData(text: '3028329414'),
+                          );
+
+                          Get.snackbar(
+                            "Copiado",
+                            "Número copiado al portapapeles",
+                            backgroundColor: Colors.green,
+                            colorText: Colors.white,
+                            snackPosition: SnackPosition.BOTTOM,
+                          );
+                        },
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 14,
+                            vertical: 12,
+                          ),
+                          decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(0.12),
+                            borderRadius: BorderRadius.circular(14),
+                            border: Border.all(color: Colors.white24),
+                          ),
+                          child: Row(
+                            children: const [
+                              Icon(
+                                FontAwesomeIcons.whatsapp,
+                                color: Colors.white,
+                              ),
+
+                              SizedBox(width: 12),
+
+                              Expanded(
+                                child: Text(
+                                  "WhatsApp: 302 8329414",
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+
+                              Icon(Icons.copy, color: Colors.white70, size: 18),
+                            ],
+                          ),
+                        ),
+                      ),
+
+                      const SizedBox(height: 12),
+
+                      // CORREO
+                      InkWell(
+                        borderRadius: BorderRadius.circular(12),
+                        onTap: () async {
+                          await Clipboard.setData(
+                            const ClipboardData(
+                              text: 'angel.manuel.fernandez2005@gmail.com',
+                            ),
+                          );
+
+                          Get.snackbar(
+                            "Copiado",
+                            "Correo copiado al portapapeles",
+                            backgroundColor: Colors.green,
+                            colorText: Colors.white,
+                            snackPosition: SnackPosition.BOTTOM,
+                          );
+                        },
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 14,
+                            vertical: 12,
+                          ),
+                          decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(0.12),
+                            borderRadius: BorderRadius.circular(14),
+                            border: Border.all(color: Colors.white24),
+                          ),
+                          child: Row(
+                            children: const [
+                              Icon(
+                                FontAwesomeIcons.envelope,
+                                color: Colors.white,
+                              ),
+
+                              SizedBox(width: 12),
+
+                              Expanded(
+                                child: Text(
+                                  "angel.manuel.fernandez2005@gmail.com",
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
+                              ),
+
+                              Icon(Icons.copy, color: Colors.white70, size: 18),
+                            ],
+                          ),
+                        ),
+                      ),
+
+                      const SizedBox(height: 22),
+
+                      // BOTON
+                      SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.white,
+                            foregroundColor: const Color(0xFF008DC5),
+                            padding: const EdgeInsets.symmetric(vertical: 14),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(14),
+                            ),
+                          ),
+                          onPressed: () => Get.back(),
+                          child: const Text(
+                            "CERRAR",
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              letterSpacing: 1,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
                 ],
               ),
-            ],
+            ),
           ),
-        ),
-      ),
     );
   }
 }
@@ -1165,42 +988,83 @@ class _OfflineSyncPanelState extends State<_OfflineSyncPanel> {
 
   Future<void> _refresh() async {
     final count = await OfflineSyncService.pendingCount();
-    if (mounted && count != _pending) setState(() => _pending = count);
+    final subiendo = OfflineSyncService.sincronizando;
+    if (mounted && (count != _pending || subiendo != _syncing)) {
+      setState(() {
+        _pending = count;
+        _syncing = subiendo;
+      });
+    }
   }
 
   Future<void> _syncNow() async {
-    if (_syncing) return;
     setState(() => _syncing = true);
+    // Si ya hay una subida en curso, se espera esa misma (no se duplica).
     final synced = await OfflineSyncService.syncPending(
       supabaseUrl: _loginController.supabaseUrl,
       apiKey: _loginController.apiKey,
     );
-    await _refresh();
-    if (mounted) {
-      setState(() => _syncing = false);
-      Get.snackbar(
-        synced > 0 ? 'Sincronización completa' : 'Sin conexión',
-        synced > 0
-            ? '$synced registro${synced == 1 ? '' : 's'} enviado${synced == 1 ? '' : 's'} correctamente.'
-            : 'Los datos siguen guardados en el dispositivo y se reintentará automáticamente.',
-        snackPosition: SnackPosition.BOTTOM,
-        backgroundColor: synced > 0 ? const Color(0xFF16794A) : const Color(0xFF8A5A00),
-        colorText: Colors.white,
-        margin: const EdgeInsets.fromLTRB(16, 0, 16, 92),
-        borderRadius: 16,
-      );
+    final quedan = await OfflineSyncService.pendingCount();
+    final error = OfflineSyncService.ultimoErrorServidor;
+    if (!mounted) return;
+    setState(() {
+      _syncing = false;
+      _pending = quedan;
+    });
+
+    final String titulo;
+    final String detalle;
+    final Color color;
+    if (quedan == 0) {
+      titulo = 'Sincronización completa';
+      detalle =
+          synced > 0
+              ? '$synced registro${synced == 1 ? '' : 's'} subido${synced == 1 ? '' : 's'} a la nube.'
+              : 'No hay datos pendientes.';
+      color = const Color(0xFF16794A);
+    } else if (error != null) {
+      final faltanColumnas =
+          error.contains('PGRST204') ||
+          error.contains('42703') ||
+          error.toLowerCase().contains('could not find the');
+      titulo = 'El servidor rechazó $quedan registro${quedan == 1 ? '' : 's'}';
+      detalle =
+          faltanColumnas
+              ? 'A Supabase le faltan columnas: ejecuta los SQL de firmas en el SQL Editor y vuelve a sincronizar.'
+              : 'Siguen guardados en el celular. Detalle: $error';
+      color = Colors.red.shade700;
+    } else {
+      titulo = synced > 0 ? 'Subida parcial' : 'Sin conexión';
+      detalle =
+          '${synced > 0 ? 'Se subieron $synced. ' : ''}Quedan $quedan pendiente${quedan == 1 ? '' : 's'} en el celular; se reintentará automáticamente.';
+      color = const Color(0xFF8A5A00);
     }
+    Get.snackbar(
+      titulo,
+      detalle,
+      snackPosition: SnackPosition.BOTTOM,
+      backgroundColor: color,
+      colorText: Colors.white,
+      margin: const EdgeInsets.fromLTRB(16, 0, 16, 92),
+      borderRadius: 16,
+      duration: const Duration(seconds: 5),
+    );
   }
 
   void _showDetails() {
     showModalBottomSheet<void>(
       context: context,
       backgroundColor: Colors.transparent,
-      builder: (context) => _SyncDetailsSheet(
-        pending: _pending,
-        syncing: _syncing,
-        onSync: _syncNow,
-      ),
+      builder:
+          (sheetContext) => _SyncDetailsSheet(
+            pending: _pending,
+            syncing: _syncing,
+            onSync: () async {
+              // Cierra la hoja y muestra el progreso en la nube.
+              Navigator.of(sheetContext).pop();
+              await _syncNow();
+            },
+          ),
     );
   }
 
@@ -1213,17 +1077,20 @@ class _OfflineSyncPanelState extends State<_OfflineSyncPanel> {
   @override
   Widget build(BuildContext context) {
     final hasPending = _pending > 0;
-    final accent = hasPending ? const Color(0xFFE18A19) : const Color(0xFF168B59);
-    final icon = hasPending ? Icons.cloud_upload_rounded : Icons.cloud_done_rounded;
+    final accent =
+        hasPending ? const Color(0xFFE18A19) : const Color(0xFF168B59);
+    final icon =
+        hasPending ? Icons.cloud_upload_rounded : Icons.cloud_done_rounded;
 
     return GestureDetector(
       onHorizontalDragEnd: _minimizeFromSwipe,
-      child: _minimized
-          ? Align(
-              alignment: Alignment.centerRight,
-              child: _buildMinimized(accent, icon),
-            )
-          : _buildExpanded(accent, icon, hasPending),
+      child:
+          _minimized
+              ? Align(
+                alignment: Alignment.centerRight,
+                child: _buildMinimized(accent, icon),
+              )
+              : _buildExpanded(accent, icon, hasPending),
     );
   }
 
@@ -1266,7 +1133,9 @@ class _OfflineSyncPanelState extends State<_OfflineSyncPanel> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        hasPending ? 'Datos pendientes por cargar' : 'Datos protegidos',
+                        hasPending
+                            ? 'Datos pendientes por cargar'
+                            : 'Datos protegidos',
                         style: const TextStyle(
                           color: Color(0xFF17324D),
                           fontSize: 13,
@@ -1278,7 +1147,10 @@ class _OfflineSyncPanelState extends State<_OfflineSyncPanel> {
                         hasPending
                             ? '$_pending registro${_pending == 1 ? '' : 's'} esperan conexión'
                             : 'Todo está sincronizado y disponible offline',
-                        style: TextStyle(color: Colors.blueGrey.shade600, fontSize: 11),
+                        style: TextStyle(
+                          color: Colors.blueGrey.shade600,
+                          fontSize: 11,
+                        ),
                       ),
                     ],
                   ),
@@ -1287,16 +1159,23 @@ class _OfflineSyncPanelState extends State<_OfflineSyncPanel> {
                   IconButton(
                     tooltip: 'Sincronizar ahora',
                     onPressed: _syncing ? null : _syncNow,
-                    icon: _syncing
-                        ? SizedBox(
-                            width: 20,
-                            height: 20,
-                            child: CircularProgressIndicator(strokeWidth: 2, color: accent),
-                          )
-                        : Icon(Icons.sync_rounded, color: accent),
+                    icon:
+                        _syncing
+                            ? SizedBox(
+                              width: 20,
+                              height: 20,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: accent,
+                              ),
+                            )
+                            : Icon(Icons.sync_rounded, color: accent),
                   )
                 else
-                  Icon(Icons.chevron_right_rounded, color: Colors.blueGrey.shade300),
+                  Icon(
+                    Icons.chevron_right_rounded,
+                    color: Colors.blueGrey.shade300,
+                  ),
               ],
             ),
           ),
@@ -1321,7 +1200,45 @@ class _OfflineSyncPanelState extends State<_OfflineSyncPanel> {
             borderRadius: BorderRadius.circular(18),
             border: Border.all(color: accent.withOpacity(0.28)),
           ),
-          child: Icon(icon, color: accent, size: 28),
+          child:
+              _syncing
+                  ? Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2.5,
+                      color: accent,
+                    ),
+                  )
+                  : Stack(
+                    clipBehavior: Clip.none,
+                    alignment: Alignment.center,
+                    children: [
+                      Icon(icon, color: accent, size: 28),
+                      if (_pending > 0)
+                        Positioned(
+                          top: 6,
+                          right: 5,
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 5,
+                              vertical: 1,
+                            ),
+                            decoration: BoxDecoration(
+                              color: accent,
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: Text(
+                              '$_pending',
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 10,
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
         ),
       ),
     );
@@ -1333,7 +1250,11 @@ class _SyncDetailsSheet extends StatelessWidget {
   final bool syncing;
   final Future<void> Function() onSync;
 
-  const _SyncDetailsSheet({required this.pending, required this.syncing, required this.onSync});
+  const _SyncDetailsSheet({
+    required this.pending,
+    required this.syncing,
+    required this.onSync,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -1354,17 +1275,35 @@ class _SyncDetailsSheet extends StatelessWidget {
               child: Container(
                 width: 42,
                 height: 5,
-                decoration: BoxDecoration(color: Colors.blueGrey.shade100, borderRadius: BorderRadius.circular(10)),
+                decoration: BoxDecoration(
+                  color: Colors.blueGrey.shade100,
+                  borderRadius: BorderRadius.circular(10),
+                ),
               ),
             ),
             const SizedBox(height: 22),
             Row(
               children: [
-                Icon(hasPending ? Icons.cloud_upload_rounded : Icons.cloud_done_rounded,
-                    color: hasPending ? const Color(0xFFE18A19) : const Color(0xFF168B59), size: 30),
+                Icon(
+                  hasPending
+                      ? Icons.cloud_upload_rounded
+                      : Icons.cloud_done_rounded,
+                  color:
+                      hasPending
+                          ? const Color(0xFFE18A19)
+                          : const Color(0xFF168B59),
+                  size: 30,
+                ),
                 const SizedBox(width: 12),
                 const Expanded(
-                  child: Text('Estado de sincronización', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: Color(0xFF17324D))),
+                  child: Text(
+                    'Estado de sincronización',
+                    style: TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.w800,
+                      color: Color(0xFF17324D),
+                    ),
+                  ),
                 ),
               ],
             ),
@@ -1381,14 +1320,26 @@ class _SyncDetailsSheet extends StatelessWidget {
                 width: double.infinity,
                 child: FilledButton.icon(
                   onPressed: syncing ? null : onSync,
-                  icon: syncing
-                      ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                      : const Icon(Icons.sync_rounded),
-                  label: Text(syncing ? 'Sincronizando...' : 'Sincronizar ahora'),
+                  icon:
+                      syncing
+                          ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: Colors.white,
+                            ),
+                          )
+                          : const Icon(Icons.sync_rounded),
+                  label: Text(
+                    syncing ? 'Sincronizando...' : 'Sincronizar ahora',
+                  ),
                   style: FilledButton.styleFrom(
                     backgroundColor: const Color(0xFF008DC5),
                     padding: const EdgeInsets.symmetric(vertical: 15),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(15),
+                    ),
                   ),
                 ),
               ),
@@ -1396,5 +1347,287 @@ class _SyncDetailsSheet extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+
+/// Diálogo "Mi cuenta" (cambiar contraseña del administrador).
+/// Los controladores se liberan en dispose(), cuando el diálogo ya terminó
+/// de cerrarse, para evitar la pantalla roja al cancelar.
+class _MiCuentaDialog extends StatefulWidget {
+  const _MiCuentaDialog();
+
+  @override
+  State<_MiCuentaDialog> createState() => _MiCuentaDialogState();
+}
+
+class _MiCuentaDialogState extends State<_MiCuentaDialog> {
+  final LoginController _loginController = Get.find<LoginController>();
+  late final TextEditingController _identificacionCtrl = TextEditingController(
+    text:
+        _loginController.loggedInUser.value?['identificacion']?.toString() ??
+        '',
+  );
+  final TextEditingController _passwordCtrl = TextEditingController();
+  bool _ocultarPassword = true;
+
+  @override
+  void dispose() {
+    _identificacionCtrl.dispose();
+    _passwordCtrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return PopScope(
+              // Evita el crash de Flutter (_dependents.isEmpty) cuando el
+              // diálogo se cierra con el botón atrás o tocando fuera de él,
+              // sin pasar por los botones Cancelar/X/Guardar: quitamos el
+              // foco del campo antes de permitir el cierre real.
+              canPop: false,
+              onPopInvokedWithResult: (didPop, result) {
+                if (didPop) return;
+                Get.closeAllSnackbars();
+                FocusManager.instance.primaryFocus?.unfocus();
+                Get.back();
+              },
+              child: Dialog(
+                backgroundColor: Colors.transparent,
+                insetPadding: const EdgeInsets.symmetric(
+                  horizontal: 22,
+                  vertical: 28,
+                ),
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 430),
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(28),
+                      boxShadow: [
+                        BoxShadow(
+                          color: const Color(0xFF15334A).withOpacity(0.22),
+                          blurRadius: 28,
+                          offset: const Offset(0, 14),
+                        ),
+                      ],
+                    ),
+                    clipBehavior: Clip.antiAlias,
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.fromLTRB(22, 22, 18, 22),
+                          decoration: const BoxDecoration(
+                            gradient: LinearGradient(
+                              colors: [Color(0xFF159A68), Color(0xFF08734E)],
+                              begin: Alignment.topLeft,
+                              end: Alignment.bottomRight,
+                            ),
+                          ),
+                          child: Row(
+                            children: [
+                              Container(
+                                width: 52,
+                                height: 52,
+                                decoration: BoxDecoration(
+                                  color: Colors.white.withOpacity(0.18),
+                                  borderRadius: BorderRadius.circular(17),
+                                ),
+                                child: const Icon(
+                                  Icons.manage_accounts_rounded,
+                                  color: Colors.white,
+                                  size: 30,
+                                ),
+                              ),
+                              const SizedBox(width: 14),
+                              const Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      'Mi cuenta',
+                                      style: TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 21,
+                                        fontWeight: FontWeight.w800,
+                                      ),
+                                    ),
+                                    SizedBox(height: 3),
+                                    Text(
+                                      'Administrador',
+                                      style: TextStyle(
+                                        color: Colors.white70,
+                                        fontSize: 13,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              IconButton(
+                                onPressed: () {
+                                  Get.closeAllSnackbars();
+                                  FocusManager.instance.primaryFocus?.unfocus();
+                                  Get.back();
+                                },
+                                icon: const Icon(
+                                  Icons.close_rounded,
+                                  color: Colors.white70,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(22, 20, 22, 22),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Actualiza tu contraseña de acceso.',
+                                style: TextStyle(
+                                  color: Colors.blueGrey.shade700,
+                                  fontSize: 14,
+                                ),
+                              ),
+                              const SizedBox(height: 18),
+                              TextField(
+                                controller: _identificacionCtrl,
+                                enabled: false,
+                                decoration: InputDecoration(
+                                  labelText: 'Usuario',
+                                  prefixIcon: const Icon(
+                                    Icons.person_outline_rounded,
+                                  ),
+                                  filled: true,
+                                  fillColor: const Color(0xFFEDEFF0),
+                                  border: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(15),
+                                    borderSide: BorderSide.none,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(height: 13),
+                              TextField(
+                                controller: _passwordCtrl,
+                                obscureText: _ocultarPassword,
+                                decoration: InputDecoration(
+                                  labelText: 'Nueva contraseña',
+                                  prefixIcon: const Icon(
+                                    Icons.lock_outline_rounded,
+                                  ),
+                                  suffixIcon: IconButton(
+                                    onPressed:
+                                        () => setState(
+                                          () =>
+                                              _ocultarPassword =
+                                                  !_ocultarPassword,
+                                        ),
+                                    icon: Icon(
+                                      _ocultarPassword
+                                          ? Icons.visibility_off_rounded
+                                          : Icons.visibility_rounded,
+                                    ),
+                                  ),
+                                  filled: true,
+                                  fillColor: const Color(0xFFF4F7F8),
+                                  border: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(15),
+                                    borderSide: BorderSide.none,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(height: 22),
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: OutlinedButton(
+                                      onPressed: () {
+                                        Get.closeAllSnackbars();
+                                        FocusManager.instance.primaryFocus
+                                            ?.unfocus();
+                                        Get.back();
+                                      },
+                                      style: OutlinedButton.styleFrom(
+                                        padding: const EdgeInsets.symmetric(
+                                          vertical: 14,
+                                        ),
+                                        shape: RoundedRectangleBorder(
+                                          borderRadius: BorderRadius.circular(
+                                            14,
+                                          ),
+                                        ),
+                                      ),
+                                      child: const Text('Cancelar'),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: FilledButton.icon(
+                                      onPressed: () async {
+                                        final nuevaPassword = _passwordCtrl.text;
+                                        if (nuevaPassword.isEmpty) {
+                                          Get.snackbar(
+                                            'Datos incompletos',
+                                            'Escribe la nueva contraseña.',
+                                          );
+                                          return;
+                                        }
+                                        final ok = await _loginController
+                                            .actualizarCuentaAdministrador(
+                                              nuevaPassword: nuevaPassword,
+                                            );
+                                        if (ok) {
+                                          Get.closeAllSnackbars();
+                                          FocusManager.instance.primaryFocus
+                                              ?.unfocus();
+                                          Get.back();
+                                          Get.snackbar(
+                                            'Cuenta actualizada',
+                                            'Tu contraseña fue cambiada.',
+                                          );
+                                        } else {
+                                          Get.closeAllSnackbars();
+                                          Get.snackbar(
+                                            'No se pudo guardar',
+                                            _loginController
+                                                    .message
+                                                    .value
+                                                    .isNotEmpty
+                                                ? _loginController.message.value
+                                                : 'Revisa que el usuario no esté en uso e intenta de nuevo.',
+                                          );
+                                        }
+                                      },
+                                      icon: const Icon(Icons.check_rounded),
+                                      label: const Text('Guardar'),
+                                      style: FilledButton.styleFrom(
+                                        backgroundColor: const Color(
+                                          0xFF12885C,
+                                        ),
+                                        padding: const EdgeInsets.symmetric(
+                                          vertical: 14,
+                                        ),
+                                        shape: RoundedRectangleBorder(
+                                          borderRadius: BorderRadius.circular(
+                                            14,
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            );
   }
 }

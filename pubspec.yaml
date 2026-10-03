@@ -15,7 +15,6 @@ dependencies:
   http: ^1.6.0
   crypto: ^3.0.7
   qr_flutter: ^4.1.0
-  simple_barcode_scanner: ^0.6.0
   flip_card: ^0.7.0
   barcode_widget: ^2.0.4
   get_storage: ^2.1.1
